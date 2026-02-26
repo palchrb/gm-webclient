@@ -27,15 +27,16 @@ func (c *GarminClient) convertMessage(
 		bodyText := body
 
 		// InReach devices often send a location alongside the text.
-		if msg.Location != nil {
-			lat := derefFloat64(msg.Location.LatitudeDegrees)
-			lon := derefFloat64(msg.Location.LongitudeDegrees)
+		if msg.UserLocation != nil {
+			lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
+			lon := derefFloat64(msg.UserLocation.LongitudeDegrees)
 			bodyText += fmt.Sprintf("\n\n📍 Location: %.6f, %.6f", lat, lon)
-			if alt := derefFloat64(msg.Location.ElevationMeters); alt != 0 {
+			if alt := derefFloat64(msg.UserLocation.ElevationMeters); alt != 0 {
 				bodyText += fmt.Sprintf(" (%.0fm)", alt)
 			}
-			if spd := derefFloat64(msg.Location.SpeedKnots); spd != 0 {
-				bodyText += fmt.Sprintf(", %.1f km/h", spd*1.852)
+			// GroundVelocityMetersPerSecond * 3.6 = km/h
+			if spd := derefFloat64(msg.UserLocation.GroundVelocityMetersPerSecond); spd != 0 {
+				bodyText += fmt.Sprintf(", %.1f km/h", spd*3.6)
 			}
 		}
 
@@ -49,9 +50,9 @@ func (c *GarminClient) convertMessage(
 	}
 
 	// --- Location-only message (pure GPS ping from InReach, no text) ---
-	if body == "" && msg.Location != nil {
-		lat := derefFloat64(msg.Location.LatitudeDegrees)
-		lon := derefFloat64(msg.Location.LongitudeDegrees)
+	if body == "" && msg.UserLocation != nil {
+		lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
+		lon := derefFloat64(msg.UserLocation.LongitudeDegrees)
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
@@ -64,16 +65,20 @@ func (c *GarminClient) convertMessage(
 
 	// --- Media attachment (AVIF image or OGG audio from Garmin) ---
 	// Download from Garmin, transcode if needed, reupload to Matrix.
-	if derefStr(msg.MediaID) != "" && len(parts) == 0 {
+	if msg.MediaID != nil && len(parts) == 0 {
 		mediaPart, err := c.bridgeIncomingMedia(ctx, intent, msg)
 		if err != nil {
 			// Don't drop the message — fall back to a notice.
-			c.log.Warn().Err(err).Str("msg_id", msg.MessageID).Msg("Failed to bridge media")
+			mediaTypeStr := ""
+			if msg.MediaType != nil {
+				mediaTypeStr = string(*msg.MediaType)
+			}
+			c.log.Warn().Err(err).Str("msg_id", msg.MessageID.String()).Msg("Failed to bridge media")
 			parts = append(parts, &bridgev2.ConvertedMessagePart{
 				Type: event.EventMessage,
 				Content: &event.MessageEventContent{
 					MsgType: event.MsgNotice,
-					Body:    fmt.Sprintf("[Media attachment (%s) — could not be downloaded]", derefStr(msg.MediaType)),
+					Body:    fmt.Sprintf("[Media attachment (%s) — could not be downloaded]", mediaTypeStr),
 				},
 			})
 		} else {
@@ -106,13 +111,24 @@ func (c *GarminClient) bridgeIncomingMedia(
 	intent bridgev2.MatrixAPI,
 	msg gm.MessageModel,
 ) (*bridgev2.ConvertedMessagePart, error) {
-	mediaID := derefStr(msg.MediaID)
-	mediaType := gm.MediaType(derefStr(msg.MediaType))
+	if msg.MediaID == nil {
+		return nil, fmt.Errorf("message has no media ID")
+	}
+	if msg.MediaType == nil {
+		return nil, fmt.Errorf("message has no media type")
+	}
+	if msg.UUID == nil {
+		return nil, fmt.Errorf("message has no UUID (required for media download)")
+	}
+
+	mediaID := *msg.MediaID
+	mediaType := *msg.MediaType
+	msgUUID := *msg.UUID
 
 	// Download from Garmin using the REST API.
 	data, err := c.api.DownloadMedia(
 		ctx,
-		derefStr(msg.UUID),
+		msgUUID,
 		mediaID,
 		msg.MessageID,
 		msg.ConversationID,

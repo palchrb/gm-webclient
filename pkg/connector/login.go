@@ -22,7 +22,7 @@ type GarminLogin struct {
 	// Set after step 1.
 	phone  string
 	auth   *gm.HermesAuth   // created in step 1, reused in step 2
-	otpReq *gm.OTPRequest   // returned by RequestOTP, needed by ConfirmOTP
+	otpReq *gm.OtpRequest  // returned by RequestOTP, needed by ConfirmOTP
 }
 
 var _ bridgev2.LoginProcessUserInput = (*GarminLogin)(nil)

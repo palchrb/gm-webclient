@@ -5,14 +5,14 @@ fi
 
 function fixperms {
 	chown -R $UID:$GID /data
-	# /opt/matrix-garmin-messenger is read-only, so disable file logging if it points there.
+	# /usr/bin/matrix-garmin-messenger is read-only, so disable file logging if it points there.
 	if [[ "$(yq e '.logging.writers[1].filename' /data/config.yaml)" == "./logs/matrix-garmin-messenger.log" ]]; then
 		yq -I4 e -i 'del(.logging.writers[1])' /data/config.yaml
 	fi
 }
 
 if [[ ! -f /data/config.yaml ]]; then
-	/usr/bin/matrix-garmin-messenger -c /data/config.yaml -e
+	/usr/bin/matrix-garmin-messenger -c /data/config.yaml -e || exit $?
 	echo "Didn't find a config file."
 	echo "Copied default config file to /data/config.yaml"
 	echo "Modify that config file to your liking."

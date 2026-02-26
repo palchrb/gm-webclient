@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	gm "github.com/slush-dev/garmin-messenger"
 	"maunium.net/go/mautrix/bridgev2"
@@ -20,10 +21,10 @@ import (
 type GarminClient struct {
 	connector *GarminConnector
 	userLogin *bridgev2.UserLogin
-	phone     string              // logged-in user's phone number
-	auth      *gm.HermesAuth     // shared auth; passed to both api and sr
-	api       *gm.HermesAPI      // REST client
-	sr        *gm.HermesSignalR  // SignalR real-time client
+	phone     string             // logged-in user's phone number
+	auth      *gm.HermesAuth    // shared auth; passed to both api and sr
+	api       *gm.HermesAPI     // REST client
+	sr        *gm.HermesSignalR // SignalR real-time client
 	log       zerolog.Logger
 }
 
@@ -126,10 +127,13 @@ func (c *GarminClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *e
 
 // GetChatInfo returns the Matrix room configuration for a Garmin conversation.
 func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	convID := string(portal.ID)
+	convID, err := uuid.Parse(string(portal.ID))
+	if err != nil {
+		return nil, fmt.Errorf("invalid conversation ID %q: %w", portal.ID, err)
+	}
 	members, err := c.api.GetConversationMembers(ctx, convID)
 	if err != nil {
-		return nil, fmt.Errorf("get members for %s: %w", convID, err)
+		return nil, fmt.Errorf("get members for %s: %w", portal.ID, err)
 	}
 
 	var chatMembers []bridgev2.ChatMember
@@ -240,7 +244,7 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
-			ID:       networkid.MessageID(result.MessageID),
+			ID:       networkid.MessageID(result.MessageID.String()),
 			SenderID: ghostIDFromHermesID(gm.PhoneToHermesUserID(c.phone)),
 		},
 	}, nil
@@ -249,8 +253,8 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 // sendMedia downloads the Matrix media, transcodes it to AVIF/OGG, and sends
 // it to Garmin using api.SendMediaMessage.
 func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessage, recipients []string) (*gm.SendMessageV2Response, error) {
-	// Download from Matrix media repo.
-	data, err := msg.DownloadMedia(ctx)
+	// Download from Matrix media repo via the bridge bot's Matrix client.
+	data, err := msg.Portal.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
 	if err != nil {
 		return nil, fmt.Errorf("download Matrix media: %w", err)
 	}
@@ -300,28 +304,28 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 // ─── Garmin → Matrix ─────────────────────────────────────────────────────────
 
 // handleIncomingMessage is the sr.OnMessage callback.
-// gm.MessageModel has pointer fields: From *string, MessageBody *string, etc.
+// gm.MessageModel uses uuid.UUID for IDs and *time.Time for timestamps.
 func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
-	convID := msg.ConversationID
-	if convID == "" {
-		c.log.Warn().Msg("Received message with empty ConversationID — ignoring")
+	if msg.ConversationID == (uuid.UUID{}) {
+		c.log.Warn().Msg("Received message with zero ConversationID — ignoring")
 		return
 	}
 
+	convIDStr := msg.ConversationID.String()
+	msgIDStr := msg.MessageID.String()
 	senderUUID := derefStr(msg.From)
-	msgID := msg.MessageID
 
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Message[gm.MessageModel]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
 			LogContext: func(ctx zerolog.Context) zerolog.Context {
 				return ctx.
-					Str("garmin_msg_id", msgID).
-					Str("conversation_id", convID).
+					Str("garmin_msg_id", msgIDStr).
+					Str("conversation_id", convIDStr).
 					Str("sender_uuid", senderUUID)
 			},
 			PortalKey: networkid.PortalKey{
-				ID:       portalIDFromConversation(convID),
+				ID:       portalIDFromConversation(convIDStr),
 				Receiver: c.userLogin.ID,
 			},
 			CreatePortal: true,
@@ -330,36 +334,39 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 				// IsFromMe is true if the sender UUID matches our own.
 				IsFromMe: senderUUID == gm.PhoneToHermesUserID(c.phone),
 			},
-			Timestamp: parseSentAt(msg.SentAt),
+			Timestamp: derefTime(msg.SentAt),
 		},
 		Data:               msg,
-		ID:                 networkid.MessageID(msgID),
+		ID:                 networkid.MessageID(msgIDStr),
 		ConvertMessageFunc: c.convertMessage,
 	})
 
 	// Mark as delivered via SignalR (real-time, preferred over REST).
-	c.sr.MarkAsDelivered(convID, msgID)
+	c.sr.MarkAsDelivered(msg.ConversationID, msg.MessageID)
 }
 
 // handleStatusUpdate is the sr.OnStatusUpdate callback.
 func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
-	statusStr := derefStr(upd.MessageStatus)
-	if statusStr != string(gm.MessageStatusRead) && statusStr != string(gm.MessageStatusDelivered) {
+	if upd.MessageStatus == nil {
+		return
+	}
+	msgStatus := *upd.MessageStatus
+	if msgStatus != gm.MessageStatusRead && msgStatus != gm.MessageStatusDelivered {
 		return
 	}
 
-	convID := upd.MessageID.ConversationID
-	msgID := upd.MessageID.MessageID
+	convIDStr := upd.MessageID.ConversationID.String()
+	msgIDStr := upd.MessageID.MessageID.String()
 
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventReadReceipt,
 			PortalKey: networkid.PortalKey{
-				ID:       portalIDFromConversation(convID),
+				ID:       portalIDFromConversation(convIDStr),
 				Receiver: c.userLogin.ID,
 			},
 		},
-		LastTarget: networkid.MessageID(msgID),
+		LastTarget: networkid.MessageID(msgIDStr),
 	})
 }
 
@@ -382,8 +389,9 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 				continue
 			}
 			// Found a matching conversation.
+			convIDStr := conv.ConversationID.String()
 			portalKey := networkid.PortalKey{
-				ID:       portalIDFromConversation(conv.ConversationID),
+				ID:       portalIDFromConversation(convIDStr),
 				Receiver: c.userLogin.ID,
 			}
 			ghost, err := c.userLogin.Bridge.GetGhostByID(ctx, ghostIDFromHermesID(memberUUID))
@@ -458,18 +466,12 @@ func buildGroupName(members []gm.UserInfoModel, myPhone string) string {
 	return name
 }
 
-// parseSentAt parses the SentAt string from MessageModel.
-// The Garmin API uses ISO 8601; fall back to time.Now() on parse error.
-func parseSentAt(s string) time.Time {
-	if s == "" {
+// derefTime safely dereferences a *time.Time, falling back to time.Now().
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
 		return time.Now()
 	}
-	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t
-		}
-	}
-	return time.Now()
+	return *t
 }
 
 // derefStr safely dereferences a *string pointer.

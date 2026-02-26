@@ -4,14 +4,15 @@ package connector
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"path/filepath"
 
 	gm "github.com/slush-dev/garmin-messenger"
+	"go.mau.fi/util/configupgrade"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/util/configupgrade"
 )
 
 // GarminConnector is the top-level NetworkConnector for the bridge.
