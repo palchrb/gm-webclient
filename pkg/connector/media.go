@@ -1,0 +1,148 @@
+package connector
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os/exec"
+)
+
+// ffmpegConvert transcodes src from srcFormat to dstFormat using ffmpeg.
+// Format strings are ffmpeg codec names, e.g. "mjpeg", "png", "libwebp",
+// "libaom-av1" (AVIF), "libvorbis" (OGG).
+func ffmpegConvert(ctx context.Context, src []byte, srcFormat, dstFormat, dstMime string) ([]byte, error) {
+	// Check ffmpeg is available.
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", err)
+	}
+
+	args := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-f", srcFormat,
+		"-i", "pipe:0", // read from stdin
+		"-f", dstFormat,
+		"pipe:1", // write to stdout
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stdin = bytes.NewReader(src)
+
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg error (%s → %s): %w\nstderr: %s", srcFormat, dstFormat, err, errBuf.String())
+	}
+	return out.Bytes(), nil
+}
+
+// ToAVIF converts an image (JPEG or PNG) to AVIF for sending to Garmin.
+// Garmin Messenger only accepts AVIF for image attachments.
+func ToAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
+	srcFormat, err := mimeToFFmpegFormat(srcMime)
+	if err != nil {
+		return nil, err
+	}
+	// avif muxer + libaom-av1 encoder. -crf 35 is a good quality/size balance.
+	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error",
+		"-f", srcFormat, "-i", "pipe:0",
+		"-c:v", "libaom-av1", "-crf", "35", "-b:v", "0",
+		"-f", "avif", "pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(src)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("image→avif: %w\n%s", err, errBuf.String())
+	}
+	return out.Bytes(), nil
+}
+
+// ToOGG converts audio (mp3, m4a, wav, etc.) to OGG Vorbis for sending to Garmin.
+// Garmin Messenger only accepts OGG for audio attachments.
+func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
+	srcFormat, err := mimeToFFmpegFormat(srcMime)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error",
+		"-f", srcFormat, "-i", "pipe:0",
+		"-c:a", "libvorbis", "-q:a", "4",
+		"-f", "ogg", "pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(src)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("audio→ogg: %w\n%s", err, errBuf.String())
+	}
+	return out.Bytes(), nil
+}
+
+// FromAVIF converts an AVIF image to JPEG for display in Matrix clients.
+// Most Matrix clients don't support AVIF natively.
+func FromAVIF(ctx context.Context, src []byte) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error",
+		"-f", "avif", "-i", "pipe:0",
+		"-f", "mjpeg", "-q:v", "3",
+		"pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(src)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("avif→jpeg: %w\n%s", err, errBuf.String())
+	}
+	return out.Bytes(), nil
+}
+
+// mimeToFFmpegFormat maps common MIME types to ffmpeg demuxer names.
+func mimeToFFmpegFormat(mime string) (string, error) {
+	switch mime {
+	case "image/jpeg", "image/jpg":
+		return "mjpeg", nil
+	case "image/png":
+		return "png_pipe", nil
+	case "image/webp":
+		return "webp_pipe", nil
+	case "image/avif":
+		return "avif", nil
+	case "audio/ogg", "audio/ogg; codecs=vorbis":
+		return "ogg", nil
+	case "audio/mpeg", "audio/mp3":
+		return "mp3", nil
+	case "audio/mp4", "audio/m4a", "audio/aac":
+		return "aac", nil
+	case "audio/wav", "audio/wave":
+		return "wav", nil
+	case "audio/webm":
+		return "webm", nil
+	default:
+		return "", fmt.Errorf("unsupported media type: %s", mime)
+	}
+}
+
+// GarminMediaType returns the gm library MediaType string for a given MIME type
+// after conversion. Used when calling api.SendMediaMessage.
+func GarminMediaType(mime string) string {
+	switch mime {
+	case "image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif":
+		return "image/avif" // always send as AVIF to Garmin
+	case "audio/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
+		"audio/aac", "audio/wav", "audio/wave", "audio/webm":
+		return "audio/ogg" // always send as OGG to Garmin
+	default:
+		return ""
+	}
+}

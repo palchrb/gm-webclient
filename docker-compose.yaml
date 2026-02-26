@@ -1,0 +1,15 @@
+services:
+  matrix-garmin-messenger:
+    image: ghcr.io/yourusername/matrix-garmin-messenger:latest
+    # Or build locally:
+    # build: .
+    container_name: matrix-garmin-messenger
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - UID=1337
+      - GID=1337
+    # Only needed if your homeserver can't reach the container on the Docker network.
+    # ports:
+    #   - "29340:29340"
