@@ -2,11 +2,13 @@ FROM golang:1-alpine3.23 AS builder
 
 RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev
 
-COPY . /build
 WORKDIR /build
-RUN go get github.com/slush-dev/garmin-messenger@main && \
-    go mod tidy && \
-    ./build.sh
+COPY go.mod ./
+
+RUN go get github.com/slush-dev/garmin-messenger@main
+
+COPY . .
+RUN go mod tidy && ./build.sh
 
 FROM alpine:3.23
 
