@@ -7,37 +7,6 @@ import (
 	"os/exec"
 )
 
-// ffmpegConvert transcodes src from srcFormat to dstFormat using ffmpeg.
-// Format strings are ffmpeg codec names, e.g. "mjpeg", "png", "libwebp",
-// "libaom-av1" (AVIF), "libvorbis" (OGG).
-func ffmpegConvert(ctx context.Context, src []byte, srcFormat, dstFormat, dstMime string) ([]byte, error) {
-	// Check ffmpeg is available.
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return nil, fmt.Errorf("ffmpeg not found: %w", err)
-	}
-
-	args := []string{
-		"-hide_banner", "-loglevel", "error",
-		"-f", srcFormat,
-		"-i", "pipe:0", // read from stdin
-		"-f", dstFormat,
-		"pipe:1", // write to stdout
-	}
-
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stdin = bytes.NewReader(src)
-
-	var out bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg error (%s → %s): %w\nstderr: %s", srcFormat, dstFormat, err, errBuf.String())
-	}
-	return out.Bytes(), nil
-}
-
 // ToAVIF converts an image (JPEG or PNG) to AVIF for sending to Garmin.
 // Garmin Messenger only accepts AVIF for image attachments.
 func ToAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
@@ -72,6 +41,9 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
+	}
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
@@ -91,6 +63,9 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 // FromAVIF converts an AVIF image to JPEG for display in Matrix clients.
 // Most Matrix clients don't support AVIF natively.
 func FromAVIF(ctx context.Context, src []byte) ([]byte, error) {
+	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
+	}
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", "avif", "-i", "pipe:0",
