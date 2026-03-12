@@ -38,6 +38,7 @@ func ToAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 
 // ToOGG converts audio (mp3, m4a, wav, etc.) to OGG Vorbis for sending to Garmin.
 // Garmin Messenger only accepts OGG for audio attachments.
+// Audio is trimmed to max 30 seconds to match Garmin voice-message limits.
 func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	srcFormat, err := mimeToFFmpegFormat(srcMime)
 	if err != nil {
@@ -49,6 +50,7 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
+		"-t", "30",
 		"-c:a", "libvorbis", "-q:a", "4",
 		"-f", "ogg", "pipe:1",
 	)

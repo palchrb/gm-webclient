@@ -33,6 +33,8 @@ type GarminClient struct {
 var _ bridgev2.NetworkAPI = (*GarminClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*GarminClient)(nil)
 
+const msgTypeSticker event.MessageType = "m.sticker"
+
 func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.HermesAuth, phone string) *GarminClient {
 	api := gm.NewHermesAPI(auth)
 	sr := gm.NewHermesSignalR(auth)
@@ -178,6 +180,8 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		}
 	}
 
+	portalAvatarURL := chooseAvatarURL(members, c.phone)
+
 	info := &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull:  true,
@@ -197,6 +201,10 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		},
 	}
 
+	if portalAvatarURL != "" {
+		info.Avatar = c.avatarFromURL(portalAvatarURL)
+	}
+
 	// Group chats (>2 members) get a comma-separated name.
 	if len(members) > 2 {
 		name := buildGroupName(members, c.phone)
@@ -214,16 +222,20 @@ func (c *GarminClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 	// unless we can find it in a conversation's member list.
 	//
 	// Attempt a lookup by checking active conversations (best-effort).
-	if phone, name := c.lookupPhoneFromUUID(ctx, string(ghost.ID)); phone != "" {
+	if phone, name, avatarURL := c.lookupPhoneFromUUID(ctx, string(ghost.ID)); phone != "" {
 		identifers := []string{"tel:" + phone}
 		displayName := name
 		if displayName == "" {
 			displayName = phone
 		}
-		return &bridgev2.UserInfo{
+		info := &bridgev2.UserInfo{
 			Identifiers: identifers,
 			Name:        ptrStr(displayName),
-		}, nil
+		}
+		if avatarURL != "" {
+			info.Avatar = c.avatarFromURL(avatarURL)
+		}
+		return info, nil
 	}
 
 	// Fallback: use the Hermes UUID itself as the display name.
@@ -491,10 +503,10 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 
 // lookupPhoneFromUUID scans conversations to find a member matching hermesUUID.
 // Returns (phone, displayName) or ("", "") if not found.
-func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string) {
+func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string, string) {
 	convs, err := c.api.GetConversations(ctx, gm.WithLimit(50))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for _, conv := range convs.Conversations {
 		members, err := c.api.GetConversationMembers(ctx, conv.ConversationID)
@@ -507,11 +519,46 @@ func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID strin
 				continue
 			}
 			if gm.PhoneToHermesUserID(addr) == strings.ToLower(hermesUUID) {
-				return addr, derefStr(m.FriendlyName)
+				return addr, derefStr(m.FriendlyName), derefStr(m.ImageUrl)
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
+}
+
+// chooseAvatarURL picks a remote participant avatar URL for a portal room.
+func chooseAvatarURL(members []gm.UserInfoModel, myPhone string) string {
+	for _, m := range members {
+		addr := derefStr(m.Address)
+		if addr == "" || addr == myPhone {
+			continue
+		}
+		if img := derefStr(m.ImageUrl); img != "" {
+			return img
+		}
+	}
+	return ""
+}
+
+func (c *GarminClient) avatarFromURL(url string) *bridgev2.Avatar {
+	return &bridgev2.Avatar{
+		ID: networkid.AvatarID(url),
+		Get: func(ctx context.Context) ([]byte, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return nil, fmt.Errorf("avatar download HTTP %d", resp.StatusCode)
+			}
+			return io.ReadAll(resp.Body)
+		},
+	}
 }
 
 // buildGroupName builds a display name for a group conversation.
