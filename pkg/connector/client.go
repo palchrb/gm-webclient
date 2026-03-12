@@ -3,7 +3,6 @@ package connector
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -256,14 +255,10 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
 		result, err = c.api.SendMessage(ctx, meta.RecipientPhones, msg.Content.Body)
 
-	case event.MsgImage, event.MsgAudio, event.MsgFile, event.MsgVideo, event.MsgSticker:
+	case event.MsgImage, event.MsgAudio, event.MsgFile:
 		result, err = c.sendMedia(ctx, msg, meta.RecipientPhones)
 
 	default:
-		if shouldBridgeAsMedia(msg) {
-			result, err = c.sendMedia(ctx, msg, meta.RecipientPhones)
-			break
-		}
 		return nil, fmt.Errorf("unsupported message type: %s", msg.Content.MsgType)
 	}
 
@@ -329,37 +324,6 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
 	return result, nil
-}
-
-func shouldBridgeAsMedia(msg *bridgev2.MatrixMessage) bool {
-	if msg == nil || msg.Content == nil {
-		return false
-	}
-	if msg.Content.URL != "" || msg.Content.File != nil {
-		return true
-	}
-	mime := msg.Content.GetInfo().MimeType
-	if strings.HasPrefix(mime, "image/") || strings.HasPrefix(mime, "audio/") {
-		return true
-	}
-	return false
-}
-
-func detectMIMEFromContent(msgType event.MessageType, data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	mime := http.DetectContentType(data)
-	// Common fallback values from DetectContentType are too generic.
-	if mime == "application/octet-stream" {
-		switch msgType {
-		case event.MsgImage, event.MsgSticker, event.MsgVideo:
-			return "image/jpeg"
-		case event.MsgAudio:
-			return "audio/ogg"
-		}
-	}
-	return mime
 }
 
 // ─── Garmin → Matrix ─────────────────────────────────────────────────────────
