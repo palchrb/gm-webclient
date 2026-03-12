@@ -113,7 +113,8 @@ func (gl *GarminLogin) submitOTP(ctx context.Context, input map[string]string) (
 	return gl.finishLogin(ctx)
 }
 
-// finishLogin creates the UserLogin record in the bridge database.
+// finishLogin creates the UserLogin record in the bridge database and
+// immediately starts the SignalR connection.
 func (gl *GarminLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, error) {
 	ul, err := gl.user.NewLogin(ctx, &database.UserLogin{
 		ID:         loginIDFromPhone(gl.phone),
@@ -130,6 +131,12 @@ func (gl *GarminLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to save login: %w", err)
 	}
+
+	// The bridge framework does not call Connect() after NewLogin —
+	// it only calls Connect() on startup (StartLogins). We must start
+	// the SignalR connection explicitly so the bridge works immediately
+	// without requiring a restart.
+	ul.Client.Connect(ul.Log.WithContext(context.Background()))
 
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
