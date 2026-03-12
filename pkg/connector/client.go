@@ -22,7 +22,7 @@ import (
 type GarminClient struct {
 	connector *GarminConnector
 	userLogin *bridgev2.UserLogin
-	phone     string             // logged-in user's phone number
+	phone     string            // logged-in user's phone number
 	auth      *gm.HermesAuth    // shared auth; passed to both api and sr
 	api       *gm.HermesAPI     // REST client
 	sr        *gm.HermesSignalR // SignalR real-time client
@@ -284,15 +284,15 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	garminMime := GarminMediaType(srcMime)
-	if garminMime == "" {
+	garminMediaType := GarminMediaType(srcMime)
+	if garminMediaType == "" {
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
 	// Transcode if necessary.
 	var transcoded []byte
-	switch garminMime {
-	case "image/avif":
+	switch garminMediaType {
+	case gm.MediaTypeImageAvif:
 		if srcMime == "image/avif" {
 			transcoded = data // already correct format
 		} else {
@@ -301,7 +301,7 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 				return nil, fmt.Errorf("transcode to AVIF: %w", err)
 			}
 		}
-	case "audio/ogg":
+	case gm.MediaTypeAudioOgg:
 		if srcMime == "audio/ogg" {
 			transcoded = data
 		} else {
@@ -317,7 +317,7 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		recipients,
 		msg.Content.Body,
 		transcoded,
-		gm.MediaType(garminMime),
+		garminMediaType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)

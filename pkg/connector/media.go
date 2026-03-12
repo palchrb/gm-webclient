@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
 // ToAVIF converts an image (JPEG or PNG) to AVIF for sending to Garmin.
@@ -108,15 +110,16 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 	}
 }
 
-// GarminMediaType returns the gm library MediaType string for a given MIME type
-// after conversion. Used when calling api.SendMediaMessage.
-func GarminMediaType(mime string) string {
+// GarminMediaType returns the Garmin API media type for a given source MIME type.
+//
+// Garmin only accepts ImageAvif for images and AudioOgg for audio.
+func GarminMediaType(mime string) gm.MediaType {
 	switch mime {
 	case "image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif":
-		return "image/avif" // always send as AVIF to Garmin
+		return gm.MediaTypeImageAvif
 	case "audio/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
 		"audio/aac", "audio/wav", "audio/wave", "audio/webm":
-		return "audio/ogg" // always send as OGG to Garmin
+		return gm.MediaTypeAudioOgg
 	default:
 		return ""
 	}
