@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	gm "github.com/slush-dev/garmin-messenger"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
