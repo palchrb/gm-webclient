@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"go.mau.fi/util/configupgrade"
@@ -149,8 +150,10 @@ func portalIDFromConversation(convID string) networkid.PortalID {
 
 // ghostIDFromHermesID uses the Hermes UUID-v5 as the ghost user ID.
 // Use gm.PhoneToHermesUserID(phone) to derive it from a phone number.
+// The UUID is normalized to lowercase to ensure consistent ghost IDs
+// regardless of the case returned by the Garmin API vs PhoneToHermesUserID.
 func ghostIDFromHermesID(hermesUUID string) networkid.UserID {
-	return networkid.UserID(hermesUUID)
+	return networkid.UserID(strings.ToLower(hermesUUID))
 }
 
 // loginIDFromPhone uses the phone number as the login ID.
