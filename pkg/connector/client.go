@@ -3,6 +3,8 @@ package connector
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -22,7 +24,7 @@ import (
 type GarminClient struct {
 	connector *GarminConnector
 	userLogin *bridgev2.UserLogin
-	phone     string             // logged-in user's phone number
+	phone     string            // logged-in user's phone number
 	auth      *gm.HermesAuth    // shared auth; passed to both api and sr
 	api       *gm.HermesAPI     // REST client
 	sr        *gm.HermesSignalR // SignalR real-time client
@@ -31,6 +33,8 @@ type GarminClient struct {
 
 var _ bridgev2.NetworkAPI = (*GarminClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*GarminClient)(nil)
+
+const msgTypeSticker event.MessageType = "m.sticker"
 
 func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.HermesAuth, phone string) *GarminClient {
 	api := gm.NewHermesAPI(auth)
@@ -177,6 +181,8 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		}
 	}
 
+	portalAvatarURL := chooseAvatarURL(members, c.phone)
+
 	info := &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull:  true,
@@ -196,6 +202,10 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		},
 	}
 
+	if portalAvatarURL != "" {
+		info.Avatar = c.avatarFromURL(portalAvatarURL)
+	}
+
 	// Group chats (>2 members) get a comma-separated name.
 	if len(members) > 2 {
 		name := buildGroupName(members, c.phone)
@@ -213,16 +223,20 @@ func (c *GarminClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 	// unless we can find it in a conversation's member list.
 	//
 	// Attempt a lookup by checking active conversations (best-effort).
-	if phone, name := c.lookupPhoneFromUUID(ctx, string(ghost.ID)); phone != "" {
+	if phone, name, avatarURL := c.lookupPhoneFromUUID(ctx, string(ghost.ID)); phone != "" {
 		identifers := []string{"tel:" + phone}
 		displayName := name
 		if displayName == "" {
 			displayName = phone
 		}
-		return &bridgev2.UserInfo{
+		info := &bridgev2.UserInfo{
 			Identifiers: identifers,
 			Name:        ptrStr(displayName),
-		}, nil
+		}
+		if avatarURL != "" {
+			info.Avatar = c.avatarFromURL(avatarURL)
+		}
+		return info, nil
 	}
 
 	// Fallback: use the Hermes UUID itself as the display name.
@@ -255,10 +269,14 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
 		result, err = c.api.SendMessage(ctx, meta.RecipientPhones, msg.Content.Body)
 
-	case event.MsgImage, event.MsgAudio, event.MsgFile:
+	case event.MsgImage, event.MsgAudio, event.MsgFile, msgTypeSticker:
 		result, err = c.sendMedia(ctx, msg, meta.RecipientPhones)
 
 	default:
+		if shouldBridgeAsMedia(msg) {
+			result, err = c.sendMedia(ctx, msg, meta.RecipientPhones)
+			break
+		}
 		return nil, fmt.Errorf("unsupported message type: %s", msg.Content.MsgType)
 	}
 
@@ -284,15 +302,18 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	garminMime := GarminMediaType(srcMime)
-	if garminMime == "" {
-		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
+	if srcMime == "" {
+		srcMime = detectMIMEFromContent(msg.Content.MsgType, data)
+	}
+	garminMediaType := GarminMediaType(srcMime)
+	if garminMediaType == "" {
+		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s (msgtype=%s)", srcMime, msg.Content.MsgType)
 	}
 
 	// Transcode if necessary.
 	var transcoded []byte
-	switch garminMime {
-	case "image/avif":
+	switch garminMediaType {
+	case gm.MediaTypeImageAvif:
 		if srcMime == "image/avif" {
 			transcoded = data // already correct format
 		} else {
@@ -301,7 +322,7 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 				return nil, fmt.Errorf("transcode to AVIF: %w", err)
 			}
 		}
-	case "audio/ogg":
+	case gm.MediaTypeAudioOgg:
 		if srcMime == "audio/ogg" {
 			transcoded = data
 		} else {
@@ -317,12 +338,43 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		recipients,
 		msg.Content.Body,
 		transcoded,
-		gm.MediaType(garminMime),
+		garminMediaType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
 	return result, nil
+}
+
+func shouldBridgeAsMedia(msg *bridgev2.MatrixMessage) bool {
+	if msg == nil || msg.Content == nil {
+		return false
+	}
+	if msg.Content.URL != "" || msg.Content.File != nil {
+		return true
+	}
+	mime := msg.Content.GetInfo().MimeType
+	if strings.HasPrefix(mime, "image/") || strings.HasPrefix(mime, "audio/") {
+		return true
+	}
+	return false
+}
+
+func detectMIMEFromContent(msgType event.MessageType, data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	mime := http.DetectContentType(data)
+	// Common fallback values from DetectContentType are too generic.
+	if mime == "application/octet-stream" {
+		switch msgType {
+		case event.MsgImage, msgTypeSticker:
+			return "image/jpeg"
+		case event.MsgAudio:
+			return "audio/ogg"
+		}
+	}
+	return mime
 }
 
 // ─── Garmin → Matrix ─────────────────────────────────────────────────────────
@@ -454,10 +506,10 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 
 // lookupPhoneFromUUID scans conversations to find a member matching hermesUUID.
 // Returns (phone, displayName) or ("", "") if not found.
-func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string) {
+func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string, string) {
 	convs, err := c.api.GetConversations(ctx, gm.WithLimit(50))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for _, conv := range convs.Conversations {
 		members, err := c.api.GetConversationMembers(ctx, conv.ConversationID)
@@ -470,11 +522,46 @@ func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID strin
 				continue
 			}
 			if gm.PhoneToHermesUserID(addr) == strings.ToLower(hermesUUID) {
-				return addr, derefStr(m.FriendlyName)
+				return addr, derefStr(m.FriendlyName), derefStr(m.ImageUrl)
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
+}
+
+// chooseAvatarURL picks a remote participant avatar URL for a portal room.
+func chooseAvatarURL(members []gm.UserInfoModel, myPhone string) string {
+	for _, m := range members {
+		addr := derefStr(m.Address)
+		if addr == "" || addr == myPhone {
+			continue
+		}
+		if img := derefStr(m.ImageUrl); img != "" {
+			return img
+		}
+	}
+	return ""
+}
+
+func (c *GarminClient) avatarFromURL(url string) *bridgev2.Avatar {
+	return &bridgev2.Avatar{
+		ID: networkid.AvatarID(url),
+		Get: func(ctx context.Context) ([]byte, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return nil, fmt.Errorf("avatar download HTTP %d", resp.StatusCode)
+			}
+			return io.ReadAll(resp.Body)
+		},
+	}
 }
 
 // buildGroupName builds a display name for a group conversation.
