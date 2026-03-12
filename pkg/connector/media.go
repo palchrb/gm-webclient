@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
 // ToAVIF converts an image (JPEG or PNG) to AVIF for sending to Garmin.
@@ -60,28 +62,6 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// FromAVIF converts an AVIF image to JPEG for display in Matrix clients.
-// Most Matrix clients don't support AVIF natively.
-func FromAVIF(ctx context.Context, src []byte) ([]byte, error) {
-	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
-		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-hide_banner", "-loglevel", "error",
-		"-f", "avif", "-i", "pipe:0",
-		"-f", "mjpeg", "-q:v", "3",
-		"pipe:1",
-	)
-	cmd.Stdin = bytes.NewReader(src)
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("avif→jpeg: %w\n%s", err, errBuf.String())
-	}
-	return out.Bytes(), nil
-}
-
 // mimeToFFmpegFormat maps common MIME types to ffmpeg demuxer names.
 func mimeToFFmpegFormat(mime string) (string, error) {
 	switch mime {
@@ -108,15 +88,16 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 	}
 }
 
-// GarminMediaType returns the gm library MediaType string for a given MIME type
-// after conversion. Used when calling api.SendMediaMessage.
-func GarminMediaType(mime string) string {
+// GarminMediaType returns the Garmin API media type for a given source MIME type.
+//
+// Garmin only accepts ImageAvif for images and AudioOgg for audio.
+func GarminMediaType(mime string) gm.MediaType {
 	switch mime {
 	case "image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif":
-		return "image/avif" // always send as AVIF to Garmin
+		return gm.MediaTypeImageAvif
 	case "audio/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
 		"audio/aac", "audio/wav", "audio/wave", "audio/webm":
-		return "audio/ogg" // always send as OGG to Garmin
+		return gm.MediaTypeAudioOgg
 	default:
 		return ""
 	}
