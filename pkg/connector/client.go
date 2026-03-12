@@ -269,7 +269,7 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
 		result, err = c.api.SendMessage(ctx, meta.RecipientPhones, msg.Content.Body)
 
-	case event.MsgImage, event.MsgAudio, event.MsgFile, msgTypeSticker:
+	case event.MsgImage, event.MsgAudio, event.MsgFile, event.MsgVideo, event.MsgSticker:
 		result, err = c.sendMedia(ctx, msg, meta.RecipientPhones)
 
 	default:
@@ -302,12 +302,10 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	if srcMime == "" {
-		srcMime = detectMIMEFromContent(msg.Content.MsgType, data)
-	}
 	garminMediaType := GarminMediaType(srcMime)
-	if garminMediaType == "" {
-		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s (msgtype=%s)", srcMime, msg.Content.MsgType)
+	garminMime := string(garminMediaType)
+	if garminMime == "" {
+		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
 	// Transcode if necessary.
@@ -368,7 +366,7 @@ func detectMIMEFromContent(msgType event.MessageType, data []byte) string {
 	// Common fallback values from DetectContentType are too generic.
 	if mime == "application/octet-stream" {
 		switch msgType {
-		case event.MsgImage, msgTypeSticker:
+		case event.MsgImage, event.MsgSticker, event.MsgVideo:
 			return "image/jpeg"
 		case event.MsgAudio:
 			return "audio/ogg"
@@ -559,11 +557,7 @@ func (c *GarminClient) avatarFromURL(url string) *bridgev2.Avatar {
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return nil, fmt.Errorf("avatar download HTTP %d", resp.StatusCode)
 			}
-			var buf bytes.Buffer
-			if _, err = buf.ReadFrom(resp.Body); err != nil {
-				return nil, err
-			}
-			return buf.Bytes(), nil
+			return io.ReadAll(resp.Body)
 		},
 	}
 }

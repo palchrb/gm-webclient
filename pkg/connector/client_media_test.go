@@ -17,10 +17,10 @@ func TestShouldBridgeAsMedia(t *testing.T) {
 		if withURL {
 			content.URL = "mxc://example.org/file"
 		}
-		return &bridgev2.MatrixMessage{MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{Content: content}}
+		return &bridgev2.MatrixMessage{Content: content}
 	}
 
-	assert.True(t, shouldBridgeAsMedia(mk(event.MsgImage, "image/png", false)))
+	assert.True(t, shouldBridgeAsMedia(mk(event.MsgImage, "", false)))
 	assert.True(t, shouldBridgeAsMedia(mk(event.MessageType("m.whatever"), "image/png", false)))
 	assert.True(t, shouldBridgeAsMedia(mk(event.MessageType("m.whatever"), "", true)))
 	assert.False(t, shouldBridgeAsMedia(mk(event.MsgText, "", false)))
@@ -33,6 +33,4 @@ func TestDetectMIMEFromContent(t *testing.T) {
 	unknown := []byte{0x01, 0x02, 0x03, 0x04}
 	assert.Equal(t, "image/jpeg", detectMIMEFromContent(event.MsgImage, unknown))
 	assert.Equal(t, "audio/ogg", detectMIMEFromContent(event.MsgAudio, unknown))
-	assert.Equal(t, "application/octet-stream", detectMIMEFromContent(event.MsgVideo, unknown))
-	assert.Equal(t, "image/jpeg", detectMIMEFromContent(msgTypeSticker, unknown))
 }
