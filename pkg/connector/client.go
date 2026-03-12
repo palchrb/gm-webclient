@@ -292,8 +292,8 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 
 	// Transcode if necessary.
 	var transcoded []byte
-	switch garminMime {
-	case "image/avif":
+	switch garminMediaType {
+	case gm.MediaTypeImageAvif:
 		if srcMime == "image/avif" {
 			transcoded = data // already correct format
 		} else {
@@ -302,7 +302,7 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 				return nil, fmt.Errorf("transcode to AVIF: %w", err)
 			}
 		}
-	case "audio/ogg":
+	case gm.MediaTypeAudioOgg:
 		if srcMime == "audio/ogg" {
 			transcoded = data
 		} else {
