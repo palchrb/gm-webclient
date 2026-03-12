@@ -110,8 +110,7 @@ func (c *GarminClient) convertMessage(
 // Matrix-friendly format, and reuploads it to the Matrix media repository.
 //
 // Garmin sends AVIF images and OGG audio.
-// We convert AVIF → JPEG because most Matrix clients don't support AVIF.
-// OGG is kept as-is since it's widely supported.
+// Keep AVIF as-is (no conversion) and keep OGG as-is.
 func (c *GarminClient) bridgeIncomingMedia(
 	ctx context.Context,
 	intent bridgev2.MatrixAPI,
@@ -145,7 +144,7 @@ func (c *GarminClient) bridgeIncomingMedia(
 		return nil, fmt.Errorf("DownloadMedia: %w", err)
 	}
 
-	// Transcode and determine Matrix event type.
+	// Determine Matrix event type and MIME.
 	var uploadData []byte
 	var mxMsgType event.MessageType
 	var mimeType string
@@ -153,14 +152,10 @@ func (c *GarminClient) bridgeIncomingMedia(
 
 	switch mediaType {
 	case gm.MediaTypeImageAvif:
-		// AVIF → JPEG for broad client compatibility.
-		uploadData, err = FromAVIF(ctx, data)
-		if err != nil {
-			return nil, fmt.Errorf("AVIF→JPEG: %w", err)
-		}
+		uploadData = data
 		mxMsgType = event.MsgImage
-		mimeType = "image/jpeg"
-		filename = "image.jpg"
+		mimeType = "image/avif"
+		filename = "image.avif"
 
 	case gm.MediaTypeAudioOgg:
 		// OGG is already well-supported in Matrix clients.

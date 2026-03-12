@@ -62,28 +62,6 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// FromAVIF converts an AVIF image to JPEG for display in Matrix clients.
-// Most Matrix clients don't support AVIF natively.
-func FromAVIF(ctx context.Context, src []byte) ([]byte, error) {
-	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
-		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-hide_banner", "-loglevel", "error",
-		"-f", "avif", "-i", "pipe:0",
-		"-f", "mjpeg", "-q:v", "3",
-		"pipe:1",
-	)
-	cmd.Stdin = bytes.NewReader(src)
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("avif→jpeg: %w\n%s", err, errBuf.String())
-	}
-	return out.Bytes(), nil
-}
-
 // mimeToFFmpegFormat maps common MIME types to ffmpeg demuxer names.
 func mimeToFFmpegFormat(mime string) (string, error) {
 	switch mime {
