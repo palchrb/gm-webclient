@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
-	gm "github.com/slush-dev/garmin-messenger"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"

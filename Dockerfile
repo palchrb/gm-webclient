@@ -4,16 +4,7 @@ RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev
 
 WORKDIR /build
 
-# The garmin-messenger Go library lives in lib/go/ of the upstream repo but is
-# not properly published to the Go module proxy (tags are on the repo root,
-# which has no Go files). We clone at the tagged commit and redirect the module
-# via a replace directive so that go mod download resolves it correctly.
-ARG GARMIN_TAG=v1.2.7
-RUN git clone --depth=1 --branch ${GARMIN_TAG} \
-    https://github.com/slush-dev/garmin-messenger.git /garmin-messenger
-
 COPY go.mod go.sum ./
-RUN go mod edit -replace github.com/slush-dev/garmin-messenger=/garmin-messenger/lib/go
 RUN go mod download
 
 COPY . .

@@ -1,5 +1,5 @@
 // Package connector implements the mautrix bridgev2 network connector for
-// Garmin Messenger, using the official slush-dev/garmin-messenger Go library.
+// Garmin Messenger, using the vendored Hermes API client (internal/hermes).
 package connector
 
 import (
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	gm "github.com/slush-dev/garmin-messenger"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"go.mau.fi/util/configupgrade"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"

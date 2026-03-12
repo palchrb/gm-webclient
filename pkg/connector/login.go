@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 
-	gm "github.com/slush-dev/garmin-messenger"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 )
 
 // GarminLogin implements the two-step SMS OTP login flow using
-// the slush-dev/garmin-messenger HermesAuth client.
+// the vendored HermesAuth client (internal/hermes).
 //
 //	Step 1: User provides phone number → gm.RequestOTP → Garmin sends SMS
 //	Step 2: User provides OTP code   → gm.ConfirmOTP → session saved to disk
