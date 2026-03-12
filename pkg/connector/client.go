@@ -289,12 +289,10 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	if srcMime == "" {
-		srcMime = detectMIMEFromContent(msg.Content.MsgType, data)
-	}
 	garminMediaType := GarminMediaType(srcMime)
-	if garminMediaType == "" {
-		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s (msgtype=%s)", srcMime, msg.Content.MsgType)
+	garminMime := string(garminMediaType)
+	if garminMime == "" {
+		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
 	// Transcode if necessary.
