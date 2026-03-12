@@ -22,7 +22,7 @@ import (
 type GarminClient struct {
 	connector *GarminConnector
 	userLogin *bridgev2.UserLogin
-	phone     string             // logged-in user's phone number
+	phone     string            // logged-in user's phone number
 	auth      *gm.HermesAuth    // shared auth; passed to both api and sr
 	api       *gm.HermesAPI     // REST client
 	sr        *gm.HermesSignalR // SignalR real-time client
@@ -284,7 +284,8 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	garminMime := GarminMediaType(srcMime)
+	garminMediaType := GarminMediaType(srcMime)
+	garminMime := string(garminMediaType)
 	if garminMime == "" {
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
@@ -317,7 +318,7 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		recipients,
 		msg.Content.Body,
 		transcoded,
-		gm.MediaType(garminMime),
+		garminMediaType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
