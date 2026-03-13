@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
@@ -73,7 +75,7 @@ func ToGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-ar", "8000", // 8000 Hz sample rate (telephone quality)
 		"-ac", "1", // mono
 		"-c:a", "libvorbis",
-		"-q:a", "1", // low quality appropriate for 8kHz voice
+		"-q:a", "4", // reasonable quality for 8kHz voice
 		"-f", "ogg", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(src)
@@ -145,4 +147,27 @@ func isAudioMIME(mime string) bool {
 		return true
 	}
 	return false
+}
+
+// ProbeAudioDurationMS returns the duration of an audio file in milliseconds
+// by running ffprobe on the data. Returns 0 on any error (non-fatal).
+func ProbeAudioDurationMS(ctx context.Context, data []byte, srcFormat string) int {
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-f", srcFormat,
+		"-show_entries", "format=duration",
+		"-of", "csv=p=0",
+		"pipe:0",
+	)
+	cmd.Stdin = bytes.NewReader(data)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	s := strings.TrimSpace(string(out))
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int(f * 1000)
 }
