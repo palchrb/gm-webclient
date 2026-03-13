@@ -288,6 +288,12 @@ func (r *hermesReceiver) ReceiveMessage(raw json.RawMessage) {
 		r.sr.logger.Error("Error parsing ReceiveMessage", "error", err)
 		return
 	}
+	if len(msg.UnknownFields) > 0 {
+		unknown, _ := json.Marshal(msg.UnknownFields)
+		r.sr.logger.Warn("ReceiveMessage: unknown fields in payload — protocol may have changed",
+			"messageId", msg.MessageID,
+			"unknownFields", string(unknown))
+	}
 	r.sr.logger.Debug("ReceiveMessage", "messageId", msg.MessageID)
 	if r.sr.onMessage != nil {
 		r.sr.onMessage(msg)

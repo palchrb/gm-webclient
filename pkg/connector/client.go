@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -76,19 +75,22 @@ func (c *GarminClient) Connect(ctx context.Context) {
 		c.handleIncomingMessage(msg)
 	})
 
-	// ReceiveReaction is a dedicated hub method Garmin may use for reaction push.
-	// If it exists, route directly to handleIncomingReaction; otherwise the
-	// fallback in hermesReceiver.ReceiveReaction routes to onMessage anyway.
+	// ReceiveReaction is a dedicated hub method that Garmin may use for reactions.
+	// In practice, reactions arrive via ReceiveMessage (confirmed from live captures),
+	// but we register this handler in case the hub method is ever used.
+	// Use the same body-parsing logic as handleIncomingMessage.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
-		if msg.ParentMessageID == nil {
-			c.log.Warn().Str("msg_id", msg.MessageID.String()).Msg("ReceiveReaction with no ParentMessageID — dropping")
+		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
+		targetID := extractUUIDFromContent(targetContent)
+		if !isReaction || targetID == "" {
+			c.log.Warn().
+				Str("msg_id", msg.MessageID.String()).
+				Str("body", derefStr(msg.MessageBody)).
+				Msg("ReceiveReaction: could not parse reaction body — routing to onMessage")
+			c.handleIncomingMessage(msg)
 			return
 		}
-		emoji := extractLeadingEmoji(derefStr(msg.MessageBody))
-		if emoji == "" {
-			emoji = derefStr(msg.MessageBody) // body might be just the emoji
-		}
-		c.handleIncomingReaction(msg, emoji)
+		c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 	})
 
 	c.sr.OnStatusUpdate(func(upd gm.MessageStatusUpdate) {
@@ -378,22 +380,26 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	}
 
 	// Detect reaction messages and route them as m.reaction events.
-	// Primary check: messageType == "Reaction" (set by Garmin in the database).
-	// Secondary check: parentMessageId set + body starts with emoji (fallback
-	// for cases where messageType is missing but the reaction format is present).
-	if msg.MessageType.IsReaction() {
-		if msg.ParentMessageID != nil {
-			emoji := derefStr(msg.MessageBody)
-			c.handleIncomingReaction(msg, emoji)
+	// Garmin sends reactions as regular messages (messageType="Unknown", parentMessageId=null).
+	// The reaction and its target are encoded entirely in the message body:
+	//   add:    "\u200b<emoji>\u200b til «\u200a\u2009<target-content>\u200a»"
+	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
+	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
+	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
+		// Try UUID resolution (works for audio/media messages whose target UUID
+		// is embedded in the body as "🎤(UUID)").
+		if targetID := extractUUIDFromContent(targetContent); targetID != "" {
+			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
-		c.log.Warn().Str("msg_id", msg.MessageID.String()).
-			Msg("Received Reaction messageType but no ParentMessageID — treating as text")
-	} else if msg.ParentMessageID != nil {
-		if emoji := extractLeadingEmoji(derefStr(msg.MessageBody)); emoji != "" {
-			c.handleIncomingReaction(msg, emoji)
-			return
-		}
+		// Could not resolve target (plain-text reactions carry only a text snippet,
+		// not a UUID). Bridge as plain text so the message isn't lost.
+		c.log.Debug().
+			Str("msg_id", msg.MessageID.String()).
+			Str("emoji", emoji).
+			Str("target_content", targetContent).
+			Bool("is_remove", isRemove).
+			Msg("Reaction target UUID not found — bridging as text")
 	}
 
 	convIDStr := msg.ConversationID.String()
@@ -438,24 +444,32 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 }
 
 // handleIncomingReaction converts a Garmin reaction message to a Matrix m.reaction event.
-// Garmin sends reactions as messages with ParentMessageID set and body "<emoji> til «…»".
-func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, emoji string) {
+// targetID is the Garmin message UUID (lowercase) of the reacted-to message,
+// extracted from the body by parseGarminReactionBody.
+// isRemove=true produces a RemoteEventReactionRemove instead of RemoteEventReaction.
+func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, emoji, targetID string, isRemove bool) {
 	convIDStr := msg.ConversationID.String()
 	senderUUID := derefStr(msg.From)
 
+	evtType := bridgev2.RemoteEventReaction
+	if isRemove {
+		evtType = bridgev2.RemoteEventReactionRemove
+	}
+
 	c.log.Debug().
 		Str("emoji", emoji).
-		Str("parent_msg_id", msg.ParentMessageID.String()).
+		Str("target_msg_id", targetID).
 		Str("conversation_id", convIDStr).
+		Bool("is_remove", isRemove).
 		Msg("Incoming Garmin reaction")
 
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Reaction{
 		EventMeta: simplevent.EventMeta{
-			Type: bridgev2.RemoteEventReaction,
+			Type: evtType,
 			LogContext: func(ctx zerolog.Context) zerolog.Context {
 				return ctx.
 					Str("garmin_msg_id", msg.MessageID.String()).
-					Str("parent_msg_id", msg.ParentMessageID.String()).
+					Str("target_msg_id", targetID).
 					Str("conversation_id", convIDStr).
 					Str("sender_uuid", senderUUID)
 			},
@@ -469,7 +483,7 @@ func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, emoji string)
 			},
 			Timestamp: derefTime(msg.SentAt),
 		},
-		TargetMessage: networkid.MessageID(msg.ParentMessageID.String()),
+		TargetMessage: networkid.MessageID(targetID),
 		Emoji:         emoji,
 	})
 }
@@ -514,35 +528,100 @@ func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2
 	return nil
 }
 
-// extractLeadingEmoji returns the first grapheme cluster from s if it consists
-// entirely of non-ASCII / emoji codepoints, otherwise returns "".
-// Used to detect Garmin reaction messages of the form "<emoji> til «…»".
-func extractLeadingEmoji(s string) string {
-	if s == "" {
-		return ""
+// parseGarminReactionBody parses a Garmin reaction message body.
+// Returns:
+//   - emoji: the reaction emoji (e.g. "❤️")
+//   - targetContent: the raw quoted target content, stripped of invisible chars
+//   - isRemove: true for "Fjernet … fra «»" (remove operation)
+//   - ok: true if the body matched the reaction format
+//
+// Confirmed wire formats (from live SignalR capture):
+//
+//	Add:    "\u200b<emoji>\u200b til «\u200a\u2009<content>\u200a»"   (Norwegian)
+//	Remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<content>\u200a»" (Norwegian)
+//	Add:    "\u200b<emoji>\u200b to "<content>""                       (English, assumed)
+//
+// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
+// For text targets, targetContent is a plain text snippet (no UUID available).
+// Use extractUUIDFromContent to attempt UUID resolution from targetContent.
+func parseGarminReactionBody(body string) (emoji, targetContent string, isRemove, ok bool) {
+	s := body
+
+	// Norwegian remove prefix.
+	if strings.HasPrefix(s, "Fjernet ") {
+		s = s[len("Fjernet "):]
+		isRemove = true
 	}
-	// Find the first space: everything before it is the candidate emoji.
-	spaceIdx := strings.IndexByte(s, ' ')
-	if spaceIdx <= 0 {
-		return ""
+
+	// Strip the ZWS that wraps the emoji.
+	s = strings.TrimPrefix(s, "\u200b")
+
+	// Extract the emoji: everything up to the next ZWS.
+	zwsIdx := strings.Index(s, "\u200b")
+	if zwsIdx <= 0 {
+		return
 	}
-	candidate := s[:spaceIdx]
-	// Require all runes to be non-letter, non-digit — i.e. symbol/emoji ranges.
-	for _, r := range candidate {
+	emoji = s[:zwsIdx]
+	s = s[zwsIdx+len("\u200b"):]
+
+	// Validate: all runes in the emoji segment must be non-ASCII.
+	for _, r := range emoji {
 		if r <= 127 {
-			return "" // ASCII character — not an emoji
-		}
-		if unicode.IsLetter(r) && !isEmojiLetter(r) {
-			return "" // regular letter, not an emoji component
+			emoji = ""
+			return
 		}
 	}
-	return candidate
+
+	// Strip the separator between emoji and quoted body.
+	s = strings.TrimLeft(s, " ")
+
+	// Find the opening guillemet (« or ") and closing (» or ").
+	var content string
+	switch {
+	case strings.HasPrefix(s, "til «") || strings.HasPrefix(s, "fra «"):
+		after := s[len("til «"):]
+		if isRemove {
+			after = s[len("fra «"):]
+		}
+		closeIdx := strings.LastIndex(after, "»")
+		if closeIdx < 0 {
+			return
+		}
+		content = after[:closeIdx]
+	case strings.HasPrefix(s, `to "`):
+		after := s[len(`to "`):]
+		closeIdx := strings.LastIndex(after, `"`)
+		if closeIdx < 0 {
+			return
+		}
+		content = after[:closeIdx]
+	default:
+		return
+	}
+
+	// Strip invisible padding characters.
+	targetContent = strings.Trim(content, "\u200a\u2009\u200b ")
+	ok = true
+	return
 }
 
-// isEmojiLetter reports whether r is a letter-like rune that appears in emoji
-// (e.g. regional indicator letters U+1F1E0–U+1F1FF).
-func isEmojiLetter(r rune) bool {
-	return r >= 0x1F1E0 // regional indicators and above
+// extractUUIDFromContent looks for a UUID in parentheses at the end of content,
+// e.g. "🎤(E1378547-4B67-4A23-9AAF-5DC45AEA4716)" → "e1378547-4b67-4a23-9aaf-5dc45aea4716".
+// Returns empty string if no valid UUID is found.
+func extractUUIDFromContent(content string) string {
+	start := strings.LastIndex(content, "(")
+	if start < 0 {
+		return ""
+	}
+	end := strings.LastIndex(content, ")")
+	if end <= start {
+		return ""
+	}
+	candidate := content[start+1 : end]
+	if _, err := uuid.Parse(candidate); err != nil {
+		return ""
+	}
+	return strings.ToLower(candidate)
 }
 
 // handleStatusUpdate is the sr.OnStatusUpdate callback.
