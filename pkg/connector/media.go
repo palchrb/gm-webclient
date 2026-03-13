@@ -75,7 +75,7 @@ func ToGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-ar", "8000", // 8000 Hz sample rate (telephone quality)
 		"-ac", "1", // mono
 		"-c:a", "libvorbis",
-		"-q:a", "4", // reasonable quality for 8kHz voice
+		"-b:a", "8k", // ~8 kbps ABR matching Garmin's own voice message bitrate
 		"-f", "ogg", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(src)
