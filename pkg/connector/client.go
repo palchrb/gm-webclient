@@ -138,8 +138,26 @@ func (c *GarminClient) LogoutRemote(_ context.Context) {
 
 // GetCapabilities returns Matrix room feature limits.
 func (c *GarminClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
+	imageMIMEs := map[string]event.CapabilitySupportLevel{
+		"image/jpeg": event.CapLevelFullySupported,
+		"image/png":  event.CapLevelFullySupported,
+		"image/webp": event.CapLevelFullySupported,
+		"image/avif": event.CapLevelFullySupported,
+	}
+	audioMIMEs := map[string]event.CapabilitySupportLevel{
+		"audio/ogg":  event.CapLevelFullySupported,
+		"audio/mpeg": event.CapLevelFullySupported,
+		"audio/mp4":  event.CapLevelFullySupported,
+		"audio/wav":  event.CapLevelFullySupported,
+		"audio/webm": event.CapLevelFullySupported,
+	}
 	return &event.RoomFeatures{
 		MaxTextLength: 160,
+		Reaction:      event.CapLevelFullySupported,
+		File: event.FileFeatureMap{
+			event.MsgImage: {MimeTypes: imageMIMEs, Caption: event.CapLevelPartialSupport},
+			event.MsgAudio: {MimeTypes: audioMIMEs},
+		},
 	}
 }
 
