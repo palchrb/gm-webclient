@@ -57,7 +57,17 @@ const (
 	HermesMessageTypeUnknown        HermesMessageType = "Unknown"
 	HermesMessageTypeMapShare       HermesMessageType = "MapShare"
 	HermesMessageTypeReferencePoint HermesMessageType = "ReferencePoint"
+	// HermesMessageTypeReaction is set on reaction messages.
+	// Garmin stores reactions separately in the Android database and sends
+	// them with this messageType alongside ParentMessageID identifying the
+	// reacted-to message.
+	HermesMessageTypeReaction HermesMessageType = "Reaction"
 )
+
+// IsReaction reports whether this message is a reaction.
+func (t *HermesMessageType) IsReaction() bool {
+	return t != nil && *t == HermesMessageTypeReaction
+}
 
 // MediaType represents the type of a media attachment.
 type MediaType string
@@ -328,16 +338,18 @@ type ConversationMuteDetailModel struct {
 // UserLocation and ReferencePoint serialize as explicit null when nil
 // (server rejects requests with those fields missing entirely).
 type SendMessageRequest struct {
-	To             []string           `json:"to"`
-	MessageBody    string             `json:"messageBody"`
-	UserLocation   *UserLocation      `json:"userLocation"`
-	ReferencePoint *UserLocation      `json:"referencePoint"`
-	MessageType    *HermesMessageType `json:"messageType"`
-	IsPost         bool               `json:"isPost"`
-	MediaID        *uuid.UUID         `json:"mediaId"`
-	MediaType      *MediaType         `json:"mediaType"`
-	UUID           *uuid.UUID         `json:"uuid"`
-	OtaUuid        *uuid.UUID         `json:"otaUuid"`
+	To              []string           `json:"to"`
+	MessageBody     string             `json:"messageBody"`
+	UserLocation    *UserLocation      `json:"userLocation"`
+	ReferencePoint  *UserLocation      `json:"referencePoint"`
+	MessageType     *HermesMessageType `json:"messageType"`
+	IsPost          bool               `json:"isPost"`
+	MediaID         *uuid.UUID         `json:"mediaId"`
+	MediaType       *MediaType         `json:"mediaType"`
+	UUID            *uuid.UUID         `json:"uuid"`
+	OtaUuid         *uuid.UUID         `json:"otaUuid"`
+	// ParentMessageID is set when sending a reaction to identify the target message.
+	ParentMessageID *uuid.UUID         `json:"parentMessageId,omitempty"`
 }
 
 // SendMessageV2Response is the response from POST Message/Send v2.
