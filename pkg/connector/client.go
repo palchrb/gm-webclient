@@ -37,9 +37,10 @@ var _ bridgev2.ReactionHandlingNetworkAPI = (*GarminClient)(nil)
 
 func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.HermesAuth, phone string) *GarminClient {
 	hermesLog := login.Log.With().Str("component", "hermes").Logger()
-	api := gm.NewHermesAPI(auth)
+	hermesLogger := slog.New(newZerologSlogHandler(hermesLog))
+	api := gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
 	sr := gm.NewHermesSignalR(auth,
-		gm.WithSignalRLogger(slog.New(newZerologSlogHandler(hermesLog))),
+		gm.WithSignalRLogger(hermesLogger),
 	)
 	return &GarminClient{
 		connector: gc,
