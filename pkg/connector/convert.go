@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
@@ -21,46 +22,23 @@ func (c *GarminClient) convertMessage(
 	var parts []*bridgev2.ConvertedMessagePart
 
 	body := derefStr(msg.MessageBody)
-
-	// --- Text body ---
-	if body != "" {
-		bodyText := body
-
-		// InReach devices often send a location alongside the text.
-		if msg.UserLocation != nil {
-			lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
-			lon := derefFloat64(msg.UserLocation.LongitudeDegrees)
-			bodyText += fmt.Sprintf("\n\n📍 Location: %.6f, %.6f", lat, lon)
-			if alt := derefFloat64(msg.UserLocation.ElevationMeters); alt != 0 {
-				bodyText += fmt.Sprintf(" (%.0fm)", alt)
-			}
-			// GroundVelocityMetersPerSecond * 3.6 = km/h
-			if spd := derefFloat64(msg.UserLocation.GroundVelocityMetersPerSecond); spd != 0 {
-				bodyText += fmt.Sprintf(", %.1f km/h", spd*3.6)
-			}
-		}
-
-		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			Type: event.EventMessage,
-			Content: &event.MessageEventContent{
-				MsgType: event.MsgText,
-				Body:    bodyText,
-			},
-		})
-	}
-
-	// --- Location-only message (pure GPS ping from InReach, no text) ---
-	if body == "" && msg.UserLocation != nil {
+	bodyText := body
+	if msg.UserLocation != nil {
 		lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
 		lon := derefFloat64(msg.UserLocation.LongitudeDegrees)
-		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			Type: event.EventMessage,
-			Content: &event.MessageEventContent{
-				MsgType: event.MsgLocation,
-				Body:    fmt.Sprintf("Location: %.6f, %.6f", lat, lon),
-				GeoURI:  fmt.Sprintf("geo:%.6f,%.6f", lat, lon),
-			},
-		})
+		if bodyText == "" {
+			// Keep this as plain text to avoid large map previews in Matrix clients.
+			bodyText = fmt.Sprintf("📍 %.6f, %.6f", lat, lon)
+		} else {
+			bodyText += fmt.Sprintf("\n\n📍 Location: %.6f, %.6f", lat, lon)
+		}
+		if alt := derefFloat64(msg.UserLocation.ElevationMeters); alt != 0 {
+			bodyText += fmt.Sprintf(" (%.0fm)", alt)
+		}
+		// GroundVelocityMetersPerSecond * 3.6 = km/h
+		if spd := derefFloat64(msg.UserLocation.GroundVelocityMetersPerSecond); spd != 0 {
+			bodyText += fmt.Sprintf(", %.1f km/h", spd*3.6)
+		}
 	}
 
 	// --- Media attachment (AVIF image or OGG audio from Garmin) ---
@@ -69,22 +47,50 @@ func (c *GarminClient) convertMessage(
 	if msg.MediaID != nil {
 		mediaPart, err := c.bridgeIncomingMedia(ctx, intent, msg)
 		if err != nil {
-			// Don't drop the message — fall back to a notice.
+			// Don't drop the message. If we have text/location content, include the
+			// media failure as a suffix to keep one Matrix part and avoid duplicate
+			// DB writes with empty part IDs.
 			mediaTypeStr := ""
 			if msg.MediaType != nil {
 				mediaTypeStr = string(*msg.MediaType)
 			}
 			c.log.Warn().Err(err).Str("msg_id", msg.MessageID.String()).Msg("Failed to bridge media")
-			parts = append(parts, &bridgev2.ConvertedMessagePart{
-				Type: event.EventMessage,
-				Content: &event.MessageEventContent{
-					MsgType: event.MsgNotice,
-					Body:    fmt.Sprintf("[Media attachment (%s) — could not be downloaded]", mediaTypeStr),
-				},
-			})
+			if bodyText != "" {
+				parts = append(parts, &bridgev2.ConvertedMessagePart{
+					Type: event.EventMessage,
+					Content: &event.MessageEventContent{
+						MsgType: event.MsgText,
+						Body:    bodyText + fmt.Sprintf("\n\n[Media attachment (%s) — could not be downloaded]", mediaTypeStr),
+					},
+				})
+			} else {
+				parts = append(parts, &bridgev2.ConvertedMessagePart{
+					Type: event.EventMessage,
+					Content: &event.MessageEventContent{
+						MsgType: event.MsgNotice,
+						Body:    fmt.Sprintf("[Media attachment (%s) — could not be downloaded]", mediaTypeStr),
+					},
+				})
+			}
 		} else {
+			if bodyText != "" {
+				// Prefer sending a single media event with caption instead of creating
+				// multiple message parts for the same remote message.
+				mediaPart.Content.Body = bodyText
+			}
 			parts = append(parts, mediaPart)
 		}
+	}
+
+	// --- Text fallback when there's no media attachment ---
+	if len(parts) == 0 && bodyText != "" {
+		parts = append(parts, &bridgev2.ConvertedMessagePart{
+			Type: event.EventMessage,
+			Content: &event.MessageEventContent{
+				MsgType: event.MsgText,
+				Body:    bodyText,
+			},
+		})
 	}
 
 	// Fallback: don't silently drop messages.
@@ -105,8 +111,7 @@ func (c *GarminClient) convertMessage(
 // Matrix-friendly format, and reuploads it to the Matrix media repository.
 //
 // Garmin sends AVIF images and OGG audio.
-// We convert AVIF → JPEG because most Matrix clients don't support AVIF.
-// OGG is kept as-is since it's widely supported.
+// Keep AVIF as-is (no conversion) and keep OGG as-is.
 func (c *GarminClient) bridgeIncomingMedia(
 	ctx context.Context,
 	intent bridgev2.MatrixAPI,
@@ -118,13 +123,14 @@ func (c *GarminClient) bridgeIncomingMedia(
 	if msg.MediaType == nil {
 		return nil, fmt.Errorf("message has no media type")
 	}
-	if msg.UUID == nil {
-		return nil, fmt.Errorf("message has no UUID (required for media download)")
+
+	msgUUID, err := c.resolveMediaMessageUUID(ctx, msg)
+	if err != nil {
+		return nil, err
 	}
 
 	mediaID := *msg.MediaID
 	mediaType := *msg.MediaType
-	msgUUID := *msg.UUID
 
 	// Download from Garmin using the REST API.
 	data, err := c.api.DownloadMedia(
@@ -139,7 +145,7 @@ func (c *GarminClient) bridgeIncomingMedia(
 		return nil, fmt.Errorf("DownloadMedia: %w", err)
 	}
 
-	// Transcode and determine Matrix event type.
+	// Determine Matrix event type and MIME.
 	var uploadData []byte
 	var mxMsgType event.MessageType
 	var mimeType string
@@ -147,14 +153,10 @@ func (c *GarminClient) bridgeIncomingMedia(
 
 	switch mediaType {
 	case gm.MediaTypeImageAvif:
-		// AVIF → JPEG for broad client compatibility.
-		uploadData, err = FromAVIF(ctx, data)
-		if err != nil {
-			return nil, fmt.Errorf("AVIF→JPEG: %w", err)
-		}
+		uploadData = data
 		mxMsgType = event.MsgImage
-		mimeType = "image/jpeg"
-		filename = "image.jpg"
+		mimeType = "image/avif"
+		filename = "image.avif"
 
 	case gm.MediaTypeAudioOgg:
 		// OGG is already well-supported in Matrix clients.
@@ -188,6 +190,38 @@ func (c *GarminClient) bridgeIncomingMedia(
 		Type:    event.EventMessage,
 		Content: content,
 	}, nil
+}
+
+// resolveMediaMessageUUID finds the UUID required by Hermes media download.
+//
+// SignalR events may omit MessageModel.UUID for some incoming messages. In that
+// case, fetch recent conversation details and find the matching message entry.
+// As a final fallback, use MessageID as UUID (best-effort).
+func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.MessageModel) (uuid.UUID, error) {
+	if msg.UUID != nil {
+		return *msg.UUID, nil
+	}
+
+	detail, err := c.api.GetConversationDetail(ctx, msg.ConversationID, gm.WithDetailLimit(100))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("message has no UUID and lookup failed: %w", err)
+	}
+
+	for _, m := range detail.Messages {
+		if m.MessageID != msg.MessageID {
+			continue
+		}
+		if m.UUID != nil {
+			return *m.UUID, nil
+		}
+		break
+	}
+
+	c.log.Warn().
+		Str("msg_id", msg.MessageID.String()).
+		Str("conversation_id", msg.ConversationID.String()).
+		Msg("Media message UUID not present in detail response, falling back to MessageID")
+	return msg.MessageID, nil
 }
 
 // derefFloat64 safely dereferences a *float64.

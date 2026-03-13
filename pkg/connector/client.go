@@ -23,7 +23,7 @@ import (
 type GarminClient struct {
 	connector *GarminConnector
 	userLogin *bridgev2.UserLogin
-	phone     string             // logged-in user's phone number
+	phone     string            // logged-in user's phone number
 	auth      *gm.HermesAuth    // shared auth; passed to both api and sr
 	api       *gm.HermesAPI     // REST client
 	sr        *gm.HermesSignalR // SignalR real-time client
@@ -168,10 +168,33 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		})
 	}
 
+	// Collect recipient phone numbers (everyone except ourselves).
+	// These are required for sending messages from Matrix to Garmin,
+	// because the Garmin API sends by phone number, not conversation ID.
+	var recipientPhones []string
+	for _, m := range members {
+		addr := derefStr(m.Address)
+		if addr != "" && addr != c.phone {
+			recipientPhones = append(recipientPhones, addr)
+		}
+	}
+
 	info := &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull:  true,
 			Members: chatMembers,
+		},
+		ExtraUpdates: func(_ context.Context, portal *bridgev2.Portal) bool {
+			meta, ok := portal.Metadata.(*PortalMetadata)
+			if !ok {
+				meta = &PortalMetadata{}
+				portal.Metadata = meta
+			}
+			if !slicesEqual(meta.RecipientPhones, recipientPhones) {
+				meta.RecipientPhones = recipientPhones
+				return true // metadata changed
+			}
+			return false
 		},
 	}
 
@@ -329,7 +352,13 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 
 	convIDStr := msg.ConversationID.String()
 	msgIDStr := msg.MessageID.String()
-	senderUUID := derefStr(msg.From)
+	senderRaw := derefStr(msg.From)
+
+	// The Garmin API returns the sender as either a phone number (+47...)
+	// or a Hermes UUID, depending on the message source. Normalize to a
+	// Hermes UUID so ghost IDs are consistent with GetChatInfo (which
+	// always derives UUIDs from phone numbers via PhoneToHermesUserID).
+	senderUUID := normalizeSenderID(senderRaw)
 
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Message[gm.MessageModel]{
 		EventMeta: simplevent.EventMeta{
@@ -338,6 +367,7 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 				return ctx.
 					Str("garmin_msg_id", msgIDStr).
 					Str("conversation_id", convIDStr).
+					Str("sender_raw", senderRaw).
 					Str("sender_uuid", senderUUID)
 			},
 			PortalKey: networkid.PortalKey{
@@ -503,7 +533,7 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 
 	for _, conv := range convs.Conversations {
 		for _, memberUUID := range conv.MemberIDs {
-			if memberUUID != targetUUID {
+			if strings.ToLower(memberUUID) != targetUUID {
 				continue
 			}
 			// Found a matching conversation.
@@ -556,7 +586,7 @@ func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID strin
 			if addr == "" {
 				continue
 			}
-			if gm.PhoneToHermesUserID(addr) == hermesUUID {
+			if gm.PhoneToHermesUserID(addr) == strings.ToLower(hermesUUID) {
 				return addr, derefStr(m.FriendlyName)
 			}
 		}
@@ -612,6 +642,30 @@ func normalizePhone(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// normalizeSenderID ensures a sender identifier from the Garmin API is always
+// a Hermes UUID. The API may return either a phone number (+47...) or a UUID.
+// Phone numbers are converted to UUIDs via PhoneToHermesUserID; UUIDs are
+// lowercased for consistent matching.
+func normalizeSenderID(raw string) string {
+	if strings.HasPrefix(raw, "+") {
+		return gm.PhoneToHermesUserID(raw)
+	}
+	return strings.ToLower(raw)
+}
+
+// slicesEqual compares two string slices for equality.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // removeFile removes a file, ignoring "not found" errors.
