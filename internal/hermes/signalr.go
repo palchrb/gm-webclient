@@ -282,7 +282,7 @@ type hermesReceiver struct {
 }
 
 func (r *hermesReceiver) ReceiveMessage(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveMessage raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveMessage raw", "json", truncate(string(raw), 10000))
 	var msg MessageModel
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveMessage", "error", err)
@@ -295,7 +295,7 @@ func (r *hermesReceiver) ReceiveMessage(raw json.RawMessage) {
 }
 
 func (r *hermesReceiver) ReceiveMessageUpdate(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveMessageUpdate raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveMessageUpdate raw", "json", truncate(string(raw), 10000))
 	var update MessageStatusUpdate
 	if err := json.Unmarshal(raw, &update); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveMessageUpdate", "error", err)
@@ -308,7 +308,7 @@ func (r *hermesReceiver) ReceiveMessageUpdate(raw json.RawMessage) {
 }
 
 func (r *hermesReceiver) ReceiveConversationMuteStatusUpdate(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveConversationMuteStatusUpdate raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveConversationMuteStatusUpdate raw", "json", truncate(string(raw), 10000))
 	var update ConversationMuteStatusUpdate
 	if err := json.Unmarshal(raw, &update); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveConversationMuteStatusUpdate", "error", err)
@@ -320,7 +320,7 @@ func (r *hermesReceiver) ReceiveConversationMuteStatusUpdate(raw json.RawMessage
 }
 
 func (r *hermesReceiver) ReceiveUserBlockStatusUpdate(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveUserBlockStatusUpdate raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveUserBlockStatusUpdate raw", "json", truncate(string(raw), 10000))
 	var update UserBlockStatusUpdate
 	if err := json.Unmarshal(raw, &update); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveUserBlockStatusUpdate", "error", err)
@@ -332,7 +332,7 @@ func (r *hermesReceiver) ReceiveUserBlockStatusUpdate(raw json.RawMessage) {
 }
 
 func (r *hermesReceiver) ReceiveServerNotification(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveServerNotification raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveServerNotification raw", "json", truncate(string(raw), 10000))
 	var notif ServerNotification
 	if err := json.Unmarshal(raw, &notif); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveServerNotification", "error", err)
@@ -349,7 +349,7 @@ func (r *hermesReceiver) ReceiveServerNotification(raw json.RawMessage) {
 // to) the regular ReceiveMessage handler. The payload uses the same MessageModel
 // shape but with messageType="Reaction" and parentMessageId set.
 func (r *hermesReceiver) ReceiveReaction(raw json.RawMessage) {
-	r.sr.logger.Debug("ReceiveReaction raw", "json", truncate(string(raw), 2000))
+	r.sr.logger.Debug("ReceiveReaction raw", "json", truncate(string(raw), 10000))
 	var msg MessageModel
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveReaction", "error", err)
