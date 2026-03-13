@@ -346,6 +346,7 @@ type SendMessageRequest struct {
 	IsPost          bool               `json:"isPost"`
 	MediaID         *uuid.UUID         `json:"mediaId"`
 	MediaType       *MediaType         `json:"mediaType"`
+	MediaMetadata   *MediaMetadata     `json:"mediaMetadata,omitempty"`
 	UUID            *uuid.UUID         `json:"uuid"`
 	OtaUuid         *uuid.UUID         `json:"otaUuid"`
 	// ParentMessageID is set when sending a reaction to identify the target message.

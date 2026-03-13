@@ -182,6 +182,7 @@ type sendMessageParams struct {
 	isPost          bool
 	mediaID         *uuid.UUID
 	mediaType       *MediaType
+	mediaMetadata   *MediaMetadata
 	parentMessageID *uuid.UUID
 }
 
@@ -215,6 +216,11 @@ func withMediaType(mt MediaType) SendMessageOption {
 	return func(p *sendMessageParams) { p.mediaType = &mt }
 }
 
+// WithMediaMetadata sets the media metadata (e.g. duration for audio).
+func WithMediaMetadata(meta MediaMetadata) SendMessageOption {
+	return func(p *sendMessageParams) { p.mediaMetadata = &meta }
+}
+
 // WithParentMessageID sets the parent message ID (for reactions and replies).
 func WithParentMessageID(id uuid.UUID) SendMessageOption {
 	return func(p *sendMessageParams) { p.parentMessageID = &id }
@@ -242,6 +248,7 @@ func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string,
 		IsPost:          params.isPost,
 		MediaID:         params.mediaID,
 		MediaType:       params.mediaType,
+		MediaMetadata:   params.mediaMetadata,
 		UUID:            &msgUUID,
 		OtaUuid:         &otaUUID,
 		ParentMessageID: params.parentMessageID,

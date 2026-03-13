@@ -347,10 +347,19 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
+	// Build extra options (e.g. duration for audio).
+	var extraOpts []gm.SendMessageOption
+	if gmMediaType == gm.MediaTypeAudioOgg {
+		if durationMS := ProbeAudioDurationMS(ctx, transcoded, "ogg"); durationMS > 0 {
+			extraOpts = append(extraOpts, gm.WithMediaMetadata(gm.MediaMetadata{DurationMs: &durationMS}))
+			c.log.Debug().Int("durationMs", durationMS).Msg("Probed OGG duration for Garmin send")
+		}
+	}
+
 	// GetCaption() returns non-empty only when Body and FileName differ,
 	// i.e. the user actually typed a caption. When no caption is given,
 	// Body == FileName (or FileName is empty), so GetCaption() returns "".
-	result, err := c.api.SendMediaMessage(ctx, recipients, msg.Content.GetCaption(), transcoded, gmMediaType)
+	result, err := c.api.SendMediaMessage(ctx, recipients, msg.Content.GetCaption(), transcoded, gmMediaType, extraOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
