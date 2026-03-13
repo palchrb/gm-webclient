@@ -155,8 +155,10 @@ func (c *GarminClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *e
 		MaxTextLength: 160,
 		Reaction:      event.CapLevelFullySupported,
 		File: event.FileFeatureMap{
-			event.MsgImage: {MimeTypes: imageMIMEs, Caption: event.CapLevelPartialSupport},
-			event.MsgAudio: {MimeTypes: audioMIMEs},
+			event.MsgImage:    {MimeTypes: imageMIMEs, Caption: event.CapLevelPartialSupport},
+			event.MsgAudio:    {MimeTypes: audioMIMEs},
+			event.MsgFile:     {MimeTypes: audioMIMEs},
+			event.CapMsgVoice: {MimeTypes: audioMIMEs},
 		},
 	}
 }
@@ -341,15 +343,10 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
-	// In Matrix, Body is always set (filename fallback when no caption).
-	// FileName is only present when the user typed an actual caption,
-	// in which case Body holds the caption and FileName holds the real filename.
-	// Send an empty caption when the user didn't type one.
-	caption := ""
-	if msg.Content.FileName != "" {
-		caption = msg.Content.Body
-	}
-	result, err := c.api.SendMediaMessage(ctx, recipients, caption, transcoded, gmMediaType)
+	// GetCaption() returns non-empty only when Body and FileName differ,
+	// i.e. the user actually typed a caption. When no caption is given,
+	// Body == FileName (or FileName is empty), so GetCaption() returns "".
+	result, err := c.api.SendMediaMessage(ctx, recipients, msg.Content.GetCaption(), transcoded, gmMediaType)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
