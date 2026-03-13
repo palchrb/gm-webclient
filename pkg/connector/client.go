@@ -80,7 +80,8 @@ func (c *GarminClient) Connect(ctx context.Context) {
 	// but we register this handler in case the hub method is ever used.
 	// Use the same body-parsing logic as handleIncomingMessage.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
-		emoji, targetID, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
+		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
+		targetID := extractUUIDFromContent(targetContent)
 		if !isReaction || targetID == "" {
 			c.log.Warn().
 				Str("msg_id", msg.MessageID.String()).
@@ -384,18 +385,21 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	//   add:    "\u200b<emoji>\u200b til «\u200a\u2009<target-content>\u200a»"
 	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
 	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
-	if emoji, targetID, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
-		if targetID != "" {
+	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
+		// Try UUID resolution (works for audio/media messages whose target UUID
+		// is embedded in the body as "🎤(UUID)").
+		if targetID := extractUUIDFromContent(targetContent); targetID != "" {
 			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
-		// Target is a plain-text snippet — we cannot reliably resolve the target
-		// Matrix event without a UUID, so fall through and bridge as a text message.
+		// Could not resolve target (plain-text reactions carry only a text snippet,
+		// not a UUID). Bridge as plain text so the message isn't lost.
 		c.log.Debug().
 			Str("msg_id", msg.MessageID.String()).
 			Str("emoji", emoji).
+			Str("target_content", targetContent).
 			Bool("is_remove", isRemove).
-			Msg("Reaction body has no UUID target — bridging as text")
+			Msg("Reaction target UUID not found — bridging as text")
 	}
 
 	convIDStr := msg.ConversationID.String()
@@ -524,10 +528,12 @@ func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2
 	return nil
 }
 
-// parseGarminReactionBody parses a Garmin reaction message body and returns the
-// reaction emoji, a target message UUID (lowercase, empty if the target is a
-// plain-text snippet), whether this is a remove operation, and whether the body
-// matched the reaction format at all.
+// parseGarminReactionBody parses a Garmin reaction message body.
+// Returns:
+//   - emoji: the reaction emoji (e.g. "❤️")
+//   - targetContent: the raw quoted target content, stripped of invisible chars
+//   - isRemove: true for "Fjernet … fra «»" (remove operation)
+//   - ok: true if the body matched the reaction format
 //
 // Confirmed wire formats (from live SignalR capture):
 //
@@ -535,9 +541,10 @@ func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2
 //	Remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<content>\u200a»" (Norwegian)
 //	Add:    "\u200b<emoji>\u200b to "<content>""                       (English, assumed)
 //
-// For audio/media targets, <content> contains a UUID: e.g. "🎤(E1378547-…)".
-// The UUID is the Garmin messageId of the target, stored case-insensitively.
-func parseGarminReactionBody(body string) (emoji, targetID string, isRemove, ok bool) {
+// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
+// For text targets, targetContent is a plain text snippet (no UUID available).
+// Use extractUUIDFromContent to attempt UUID resolution from targetContent.
+func parseGarminReactionBody(body string) (emoji, targetContent string, isRemove, ok bool) {
 	s := body
 
 	// Norwegian remove prefix.
@@ -593,10 +600,8 @@ func parseGarminReactionBody(body string) (emoji, targetID string, isRemove, ok 
 	}
 
 	// Strip invisible padding characters.
-	content = strings.Trim(content, "\u200a\u2009\u200b ")
-
+	targetContent = strings.Trim(content, "\u200a\u2009\u200b ")
 	ok = true
-	targetID = extractUUIDFromContent(content)
 	return
 }
 
