@@ -75,22 +75,26 @@ func (c *GarminClient) Connect(ctx context.Context) {
 		c.handleIncomingMessage(msg)
 	})
 
-	// ReceiveReaction is a dedicated hub method that Garmin may use for reactions.
-	// In practice, reactions arrive via ReceiveMessage (confirmed from live captures),
-	// but we register this handler in case the hub method is ever used.
-	// Use the same body-parsing logic as handleIncomingMessage.
+	// ReceiveReaction is the dedicated SignalR hub method for reactions.
+	// When called, msg.ParentMessageID is the server-assigned messageId of the
+	// target message and msg.MessageBody is the bare emoji (e.g. "❤️").
+	// If ParentMessageID is missing we fall back to body parsing.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
-		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
-		targetID := c.resolveReactionTarget(msg, targetContent)
-		if !isReaction || targetID == "" {
-			c.log.Warn().
-				Str("msg_id", msg.MessageID.String()).
-				Str("body", derefStr(msg.MessageBody)).
-				Msg("ReceiveReaction: could not resolve reaction target — routing to onMessage")
-			c.handleIncomingMessage(msg)
+		if targetID := c.resolveReactionTarget(msg, derefStr(msg.MessageBody)); targetID != "" {
+			emoji, _, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
+			if !isReaction {
+				// Body is the bare emoji, not the encoded format — use it directly.
+				emoji = strings.TrimSpace(derefStr(msg.MessageBody))
+			}
+			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
-		c.handleIncomingReaction(msg, emoji, targetID, isRemove)
+		c.log.Warn().
+			Str("msg_id", msg.MessageID.String()).
+			Str("body", derefStr(msg.MessageBody)).
+			Str("parent_msg_id", uuidPtrStr(msg.ParentMessageID)).
+			Msg("ReceiveReaction: could not resolve reaction target — routing to onMessage")
+		c.handleIncomingMessage(msg)
 	})
 
 	c.sr.OnStatusUpdate(func(upd gm.MessageStatusUpdate) {
@@ -380,11 +384,19 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	}
 
 	// Detect reaction messages and route them as m.reaction events.
-	// Garmin sends reactions as regular messages (messageType="Unknown", parentMessageId=null).
-	// The reaction and its target are encoded entirely in the message body:
-	//   add:    "\u200b<emoji>\u200b til «\u200a\u2009<target-content>\u200a»"
-	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
-	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
+	//
+	// Case 1: structured reaction routed via ReceiveMessage fallback.
+	//   messageType="Reaction", parentMessageId=<target uuid> — direct ID lookup.
+	// Case 2: reaction encoded in body (messageType="Unknown", parentMessageId=null).
+	//   body: "\u200b<emoji>\u200b til «\u200a\u2009<target-content>\u200a»"
+	//   For audio/media the target-content contains the target UUID: "🎤(UUID)".
+	if msg.MessageType.IsReaction() {
+		if targetID := c.resolveReactionTarget(msg, ""); targetID != "" {
+			emoji := strings.TrimSpace(derefStr(msg.MessageBody))
+			c.handleIncomingReaction(msg, emoji, targetID, false)
+			return
+		}
+	}
 	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
 		if targetID := c.resolveReactionTarget(msg, targetContent); targetID != "" {
 			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
@@ -525,11 +537,17 @@ func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2
 	return nil
 }
 
-// resolveReactionTarget finds the bridge messageId for the message being reacted to.
-// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
-// For plain text targets there is no machine-readable target identifier in the
-// wire payload, so "" is returned and the reaction is bridged as plain text.
-func (c *GarminClient) resolveReactionTarget(_ gm.MessageModel, targetContent string) string {
+// resolveReactionTarget returns the bridge messageId of the message being reacted to.
+//
+// Resolution order:
+//  1. msg.ParentMessageID — set by ReceiveReaction hub method; direct server ID match.
+//  2. targetContent UUID — for audio/media bodies like "🎤(UUID)".
+//
+// Returns "" if the target cannot be resolved (plain text reactions via ReceiveMessage).
+func (c *GarminClient) resolveReactionTarget(msg gm.MessageModel, targetContent string) string {
+	if msg.ParentMessageID != nil {
+		return msg.ParentMessageID.String()
+	}
 	return extractUUIDFromContent(targetContent)
 }
 
@@ -768,6 +786,13 @@ func derefStr(s *string) string {
 
 func ptrInt(v int) *int       { return &v }
 func ptrStr(v string) *string { return &v }
+
+func uuidPtrStr(u *uuid.UUID) string {
+	if u == nil {
+		return ""
+	}
+	return u.String()
+}
 
 // normalizePhone strips non-digit characters for comparison.
 func normalizePhone(s string) string {
