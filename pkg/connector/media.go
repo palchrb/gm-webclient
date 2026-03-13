@@ -58,8 +58,11 @@ func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 	return os.ReadFile(tmpPath)
 }
 
-// ToGarminOGG converts audio to OGG Vorbis matching the Garmin Messenger
-// voice message format: 8000 Hz sample rate, mono, max 30 seconds.
+// ToGarminOGG converts audio to OGG Opus matching the Garmin Messenger iOS
+// voice message format: Opus codec, 48000 Hz input sample rate, mono, max 30 seconds.
+// Verified by inspecting actual files stored by the Garmin Messenger Android app:
+//   - iOS-recorded messages: Ogg Opus, mono, 48000 Hz
+//   - 16 kbps is standard Opus voice quality
 func ToGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	srcFormat, err := mimeToFFmpegFormat(srcMime)
 	if err != nil {
@@ -72,10 +75,10 @@ func ToGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
 		"-t", "30", // max 30 seconds
-		"-ar", "8000", // 8000 Hz sample rate (telephone quality)
+		"-ar", "48000", // 48000 Hz — Opus native sample rate (matches iOS Garmin Messenger)
 		"-ac", "1", // mono
-		"-c:a", "libvorbis",
-		"-b:a", "8k", // ~8 kbps ABR matching Garmin's own voice message bitrate
+		"-c:a", "libopus",
+		"-b:a", "16k", // 16 kbps — standard Opus voice quality
 		"-f", "ogg", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(src)
