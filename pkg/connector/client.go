@@ -71,6 +71,21 @@ func (c *GarminClient) Connect(ctx context.Context) {
 		c.handleIncomingMessage(msg)
 	})
 
+	// ReceiveReaction is a dedicated hub method Garmin may use for reaction push.
+	// If it exists, route directly to handleIncomingReaction; otherwise the
+	// fallback in hermesReceiver.ReceiveReaction routes to onMessage anyway.
+	c.sr.OnReaction(func(msg gm.MessageModel) {
+		if msg.ParentMessageID == nil {
+			c.log.Warn().Str("msg_id", msg.MessageID.String()).Msg("ReceiveReaction with no ParentMessageID — dropping")
+			return
+		}
+		emoji := extractLeadingEmoji(derefStr(msg.MessageBody))
+		if emoji == "" {
+			emoji = derefStr(msg.MessageBody) // body might be just the emoji
+		}
+		c.handleIncomingReaction(msg, emoji)
+	})
+
 	c.sr.OnStatusUpdate(func(upd gm.MessageStatusUpdate) {
 		c.handleStatusUpdate(upd)
 	})
@@ -204,21 +219,6 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		info.Name = &name
 	}
 
-	// Populate RecipientPhones in portal metadata so HandleMatrixMessage can send.
-	// The Garmin API sends by phone number, not conversation ID.
-	var recipientPhones []string
-	for _, m := range members {
-		addr := derefStr(m.Address)
-		if addr != "" && addr != c.phone {
-			recipientPhones = append(recipientPhones, addr)
-		}
-	}
-	if len(recipientPhones) > 0 {
-		if meta, ok := portal.Metadata.(*PortalMetadata); ok {
-			meta.RecipientPhones = recipientPhones
-		}
-	}
-
 	return info, nil
 }
 
@@ -340,10 +340,19 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 		return
 	}
 
-	// Garmin sends reactions as regular messages with ParentMessageID set
-	// and a body of the form "<emoji> til «<original text>»".
-	// Detect and route these as m.reaction events instead of text messages.
-	if msg.ParentMessageID != nil {
+	// Detect reaction messages and route them as m.reaction events.
+	// Primary check: messageType == "Reaction" (set by Garmin in the database).
+	// Secondary check: parentMessageId set + body starts with emoji (fallback
+	// for cases where messageType is missing but the reaction format is present).
+	if msg.MessageType.IsReaction() {
+		if msg.ParentMessageID != nil {
+			emoji := derefStr(msg.MessageBody)
+			c.handleIncomingReaction(msg, emoji)
+			return
+		}
+		c.log.Warn().Str("msg_id", msg.MessageID.String()).
+			Msg("Received Reaction messageType but no ParentMessageID — treating as text")
+	} else if msg.ParentMessageID != nil {
 		if emoji := extractLeadingEmoji(derefStr(msg.MessageBody)); emoji != "" {
 			c.handleIncomingReaction(msg, emoji)
 			return
@@ -437,9 +446,9 @@ func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.
 	}, nil
 }
 
-// HandleMatrixReaction sends a Matrix reaction to Garmin as a text message
-// containing the emoji. Garmin has no native reaction API; the Garmin app
-// itself sends reactions as messages of the form "<emoji> til «<text>»".
+// HandleMatrixReaction sends a Matrix reaction to Garmin.
+// Uses the Garmin reaction API: messageType="Reaction" + parentMessageId.
+// The target message's Garmin UUID is read from TargetMessage.ID.
 func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
 	meta, ok := msg.Portal.Metadata.(*PortalMetadata)
 	if !ok || len(meta.RecipientPhones) == 0 {
@@ -448,7 +457,13 @@ func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 
 	emoji := msg.Content.RelatesTo.Key
 
-	if _, err := c.api.SendMessage(ctx, meta.RecipientPhones, emoji); err != nil {
+	// The target message ID is the Garmin message UUID stored as networkid.MessageID.
+	parentMsgID, err := uuid.Parse(string(msg.TargetMessage.ID))
+	if err != nil {
+		return nil, fmt.Errorf("invalid target message ID %q: %w", msg.TargetMessage.ID, err)
+	}
+
+	if _, err := c.api.SendReaction(ctx, meta.RecipientPhones, emoji, parentMsgID); err != nil {
 		return nil, fmt.Errorf("send reaction to Garmin: %w", err)
 	}
 

@@ -176,12 +176,13 @@ func (api *HermesAPI) GetMutedConversations(ctx context.Context) ([]Conversation
 // SendMessageOption configures SendMessage.
 type SendMessageOption func(*sendMessageParams)
 type sendMessageParams struct {
-	userLocation   *UserLocation
-	referencePoint *UserLocation
-	messageType    *HermesMessageType
-	isPost         bool
-	mediaID        *uuid.UUID
-	mediaType      *MediaType
+	userLocation    *UserLocation
+	referencePoint  *UserLocation
+	messageType     *HermesMessageType
+	isPost          bool
+	mediaID         *uuid.UUID
+	mediaType       *MediaType
+	parentMessageID *uuid.UUID
 }
 
 // WithUserLocation sets the sender's location.
@@ -214,6 +215,11 @@ func withMediaType(mt MediaType) SendMessageOption {
 	return func(p *sendMessageParams) { p.mediaType = &mt }
 }
 
+// WithParentMessageID sets the parent message ID (for reactions and replies).
+func WithParentMessageID(id uuid.UUID) SendMessageOption {
+	return func(p *sendMessageParams) { p.parentMessageID = &id }
+}
+
 // SendMessage sends a message to one or more recipients.
 func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string, opts ...SendMessageOption) (*SendMessageV2Response, error) {
 	params := &sendMessageParams{}
@@ -228,16 +234,17 @@ func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string,
 	}
 
 	req := SendMessageRequest{
-		To:             to,
-		MessageBody:    body,
-		UserLocation:   params.userLocation,
-		ReferencePoint: params.referencePoint,
-		MessageType:    params.messageType,
-		IsPost:         params.isPost,
-		MediaID:        params.mediaID,
-		MediaType:      params.mediaType,
-		UUID:           &msgUUID,
-		OtaUuid:        &otaUUID,
+		To:              to,
+		MessageBody:     body,
+		UserLocation:    params.userLocation,
+		ReferencePoint:  params.referencePoint,
+		MessageType:     params.messageType,
+		IsPost:          params.isPost,
+		MediaID:         params.mediaID,
+		MediaType:       params.mediaType,
+		UUID:            &msgUUID,
+		OtaUuid:         &otaUUID,
+		ParentMessageID: params.parentMessageID,
 	}
 
 	var result SendMessageV2Response
@@ -245,6 +252,17 @@ func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string,
 		return nil, err
 	}
 	return &result, nil
+}
+
+// SendReaction sends a reaction emoji to a specific message.
+// Garmin stores reactions separately from regular messages in its database,
+// using messageType="Reaction" and parentMessageId to identify the target.
+func (api *HermesAPI) SendReaction(ctx context.Context, to []string, emoji string, parentMessageID uuid.UUID) (*SendMessageV2Response, error) {
+	reactionType := HermesMessageTypeReaction
+	return api.SendMessage(ctx, to, emoji,
+		WithMessageType(reactionType),
+		WithParentMessageID(parentMessageID),
+	)
 }
 
 // GetMessageDeviceMetadata returns satellite device metadata for messages.

@@ -104,6 +104,19 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 	}
 }
 
+// GarminMediaType returns the Garmin MediaType enum for a given source MIME type,
+// or the zero value if the type is not supported.
+func GarminMediaType(mime string) gm.MediaType {
+	switch {
+	case isImageMIME(mime):
+		return gm.MediaTypeImageAvif
+	case isAudioMIME(mime):
+		return gm.MediaTypeAudioOgg
+	default:
+		return ""
+	}
+}
+
 // isImageMIME reports whether the MIME type is a supported image format.
 func isImageMIME(mime string) bool {
 	switch mime {

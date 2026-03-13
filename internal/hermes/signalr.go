@@ -37,9 +37,12 @@ type HermesSignalR struct {
 	onBlockUpdate              func(UserBlockStatusUpdate)
 	onNotification             func(ServerNotification)
 	onNonconversationalMessage func(string)
-	onOpen                     func()
-	onClose                    func()
-	onError                    func(error)
+	// onReaction is called for dedicated reaction hub method invocations
+	// (ReceiveReaction), if Garmin uses a separate hub method for reactions.
+	onReaction func(MessageModel)
+	onOpen     func()
+	onClose    func()
+	onError    func(error)
 
 	mu      sync.Mutex
 	stopped bool
@@ -66,6 +69,7 @@ func (sr *HermesSignalR) OnMuteUpdate(handler func(ConversationMuteStatusUpdate)
 func (sr *HermesSignalR) OnBlockUpdate(handler func(UserBlockStatusUpdate))          { sr.onBlockUpdate = handler }
 func (sr *HermesSignalR) OnNotification(handler func(ServerNotification))            { sr.onNotification = handler }
 func (sr *HermesSignalR) OnNonconversationalMessage(handler func(string))            { sr.onNonconversationalMessage = handler }
+func (sr *HermesSignalR) OnReaction(handler func(MessageModel))                      { sr.onReaction = handler }
 func (sr *HermesSignalR) OnOpen(handler func())                                      { sr.onOpen = handler }
 func (sr *HermesSignalR) OnClose(handler func())                                     { sr.onClose = handler }
 func (sr *HermesSignalR) OnError(handler func(error))                                { sr.onError = handler }
@@ -337,6 +341,29 @@ func (r *hermesReceiver) ReceiveServerNotification(raw json.RawMessage) {
 	r.sr.logger.Debug("ServerNotification", "notification", notif)
 	if r.sr.onNotification != nil {
 		r.sr.onNotification(notif)
+	}
+}
+
+// ReceiveReaction handles a dedicated reaction push from the Garmin SignalR hub.
+// Garmin may send reactions via this separate hub method rather than (or in addition
+// to) the regular ReceiveMessage handler. The payload uses the same MessageModel
+// shape but with messageType="Reaction" and parentMessageId set.
+func (r *hermesReceiver) ReceiveReaction(raw json.RawMessage) {
+	r.sr.logger.Debug("ReceiveReaction raw", "json", truncate(string(raw), 2000))
+	var msg MessageModel
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		r.sr.logger.Error("Error parsing ReceiveReaction", "error", err)
+		return
+	}
+	reactionType := HermesMessageTypeReaction
+	msg.MessageType = &reactionType
+	r.sr.logger.Debug("ReceiveReaction", "messageId", msg.MessageID, "parentMessageId", msg.ParentMessageID)
+	if r.sr.onReaction != nil {
+		r.sr.onReaction(msg)
+	} else if r.sr.onMessage != nil {
+		// Fall back to the regular message handler if no dedicated reaction handler
+		// is registered, so reactions aren't silently lost.
+		r.sr.onMessage(msg)
 	}
 }
 
