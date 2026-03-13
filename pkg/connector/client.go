@@ -3,7 +3,9 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -30,6 +32,7 @@ type GarminClient struct {
 
 var _ bridgev2.NetworkAPI = (*GarminClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*GarminClient)(nil)
+var _ bridgev2.ReactionHandlingNetworkAPI = (*GarminClient)(nil)
 
 func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.HermesAuth, phone string) *GarminClient {
 	api := gm.NewHermesAPI(auth)
@@ -178,6 +181,21 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		info.Name = &name
 	}
 
+	// Populate RecipientPhones in portal metadata so HandleMatrixMessage can send.
+	// The Garmin API sends by phone number, not conversation ID.
+	var recipientPhones []string
+	for _, m := range members {
+		addr := derefStr(m.Address)
+		if addr != "" && addr != c.phone {
+			recipientPhones = append(recipientPhones, addr)
+		}
+	}
+	if len(recipientPhones) > 0 {
+		if meta, ok := portal.Metadata.(*PortalMetadata); ok {
+			meta.RecipientPhones = recipientPhones
+		}
+	}
+
 	return info, nil
 }
 
@@ -260,41 +278,29 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 
 	srcMime := msg.Content.GetInfo().MimeType
-	garminMime := GarminMediaType(srcMime)
-	if garminMime == "" {
+
+	// Determine target Garmin media type and transcode.
+	var transcoded []byte
+	var gmMediaType gm.MediaType
+
+	switch {
+	case isImageMIME(srcMime):
+		gmMediaType = gm.MediaTypeImageAvif
+		transcoded, err = ToGarminAVIF(ctx, data, srcMime)
+		if err != nil {
+			return nil, fmt.Errorf("transcode to AVIF: %w", err)
+		}
+	case isAudioMIME(srcMime):
+		gmMediaType = gm.MediaTypeAudioOgg
+		transcoded, err = ToGarminOGG(ctx, data, srcMime)
+		if err != nil {
+			return nil, fmt.Errorf("transcode to OGG: %w", err)
+		}
+	default:
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
-	// Transcode if necessary.
-	var transcoded []byte
-	switch garminMime {
-	case "image/avif":
-		if srcMime == "image/avif" {
-			transcoded = data // already correct format
-		} else {
-			transcoded, err = ToAVIF(ctx, data, srcMime)
-			if err != nil {
-				return nil, fmt.Errorf("transcode to AVIF: %w", err)
-			}
-		}
-	case "audio/ogg":
-		if srcMime == "audio/ogg" {
-			transcoded = data
-		} else {
-			transcoded, err = ToOGG(ctx, data, srcMime)
-			if err != nil {
-				return nil, fmt.Errorf("transcode to OGG: %w", err)
-			}
-		}
-	}
-
-	result, err := c.api.SendMediaMessage(
-		ctx,
-		recipients,
-		msg.Content.Body,
-		transcoded,
-		gm.MediaType(garminMime),
-	)
+	result, err := c.api.SendMediaMessage(ctx, recipients, msg.Content.Body, transcoded, gmMediaType)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
@@ -309,6 +315,16 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	if msg.ConversationID == (uuid.UUID{}) {
 		c.log.Warn().Msg("Received message with zero ConversationID — ignoring")
 		return
+	}
+
+	// Garmin sends reactions as regular messages with ParentMessageID set
+	// and a body of the form "<emoji> til «<original text>»".
+	// Detect and route these as m.reaction events instead of text messages.
+	if msg.ParentMessageID != nil {
+		if emoji := extractLeadingEmoji(derefStr(msg.MessageBody)); emoji != "" {
+			c.handleIncomingReaction(msg, emoji)
+			return
+		}
 	}
 
 	convIDStr := msg.ConversationID.String()
@@ -343,6 +359,108 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 
 	// Mark as delivered via SignalR (real-time, preferred over REST).
 	c.sr.MarkAsDelivered(msg.ConversationID, msg.MessageID)
+}
+
+// handleIncomingReaction converts a Garmin reaction message to a Matrix m.reaction event.
+// Garmin sends reactions as messages with ParentMessageID set and body "<emoji> til «…»".
+func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, emoji string) {
+	convIDStr := msg.ConversationID.String()
+	senderUUID := derefStr(msg.From)
+
+	c.log.Debug().
+		Str("emoji", emoji).
+		Str("parent_msg_id", msg.ParentMessageID.String()).
+		Str("conversation_id", convIDStr).
+		Msg("Incoming Garmin reaction")
+
+	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Reaction{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventReaction,
+			LogContext: func(ctx zerolog.Context) zerolog.Context {
+				return ctx.
+					Str("garmin_msg_id", msg.MessageID.String()).
+					Str("parent_msg_id", msg.ParentMessageID.String()).
+					Str("conversation_id", convIDStr).
+					Str("sender_uuid", senderUUID)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       portalIDFromConversation(convIDStr),
+				Receiver: c.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				Sender:   ghostIDFromHermesID(senderUUID),
+				IsFromMe: senderUUID == gm.PhoneToHermesUserID(c.phone),
+			},
+			Timestamp: derefTime(msg.SentAt),
+		},
+		TargetMessage: networkid.MessageID(msg.ParentMessageID.String()),
+		Emoji:         emoji,
+	})
+}
+
+// PreHandleMatrixReaction is called first to identify the reaction for deduplication.
+func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
+	return bridgev2.MatrixReactionPreResponse{
+		SenderID:     ghostIDFromHermesID(gm.PhoneToHermesUserID(c.phone)),
+		Emoji:        msg.Content.RelatesTo.Key,
+		MaxReactions: 1,
+	}, nil
+}
+
+// HandleMatrixReaction sends a Matrix reaction to Garmin as a text message
+// containing the emoji. Garmin has no native reaction API; the Garmin app
+// itself sends reactions as messages of the form "<emoji> til «<text>»".
+func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
+	meta, ok := msg.Portal.Metadata.(*PortalMetadata)
+	if !ok || len(meta.RecipientPhones) == 0 {
+		return nil, fmt.Errorf("portal has no recipient phone numbers — cannot send reaction")
+	}
+
+	emoji := msg.Content.RelatesTo.Key
+
+	if _, err := c.api.SendMessage(ctx, meta.RecipientPhones, emoji); err != nil {
+		return nil, fmt.Errorf("send reaction to Garmin: %w", err)
+	}
+
+	// Return an empty Reaction; the bridge framework fills in the standard fields.
+	return &database.Reaction{}, nil
+}
+
+// HandleMatrixReactionRemove is called when a reaction is redacted on Matrix.
+// Garmin has no reaction removal API, so we silently ignore this.
+func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2.MatrixReactionRemove) error {
+	return nil
+}
+
+// extractLeadingEmoji returns the first grapheme cluster from s if it consists
+// entirely of non-ASCII / emoji codepoints, otherwise returns "".
+// Used to detect Garmin reaction messages of the form "<emoji> til «…»".
+func extractLeadingEmoji(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Find the first space: everything before it is the candidate emoji.
+	spaceIdx := strings.IndexByte(s, ' ')
+	if spaceIdx <= 0 {
+		return ""
+	}
+	candidate := s[:spaceIdx]
+	// Require all runes to be non-letter, non-digit — i.e. symbol/emoji ranges.
+	for _, r := range candidate {
+		if r <= 127 {
+			return "" // ASCII character — not an emoji
+		}
+		if unicode.IsLetter(r) && !isEmojiLetter(r) {
+			return "" // regular letter, not an emoji component
+		}
+	}
+	return candidate
+}
+
+// isEmojiLetter reports whether r is a letter-like rune that appears in emoji
+// (e.g. regional indicator letters U+1F1E0–U+1F1FF).
+func isEmojiLetter(r rune) bool {
+	return r >= 0x1F1E0 // regional indicators and above
 }
 
 // handleStatusUpdate is the sr.OnStatusUpdate callback.
