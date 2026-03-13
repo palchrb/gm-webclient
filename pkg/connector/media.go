@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -24,10 +25,20 @@ func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
 	}
+	// AVIF muxer requires seekable output — write to a temp file.
+	tmpOut, err := os.CreateTemp("", "garmin-avif-*.avif")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmpOut.Name()
+	tmpOut.Close()
+	defer os.Remove(tmpPath)
+
 	// Scale so the longest side is at most 1920px, keeping aspect ratio.
 	// CRF 50 matches quality=20/100 on libavif/libaom-av1.
 	// yuv444p matches the app's YUV444 pixel format setting.
 	// cpu-used 6 for fast encoding (app uses speed=6).
+	var errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
@@ -36,16 +47,14 @@ func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 		"-crf", "50", "-b:v", "0",
 		"-cpu-used", "6",
 		"-pix_fmt", "yuv444p",
-		"-f", "avif", "pipe:1",
+		"-y", tmpPath,
 	)
 	cmd.Stdin = bytes.NewReader(src)
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("image→garmin-avif: %w\n%s", err, errBuf.String())
 	}
-	return out.Bytes(), nil
+	return os.ReadFile(tmpPath)
 }
 
 // ToGarminOGG converts audio to OGG Vorbis matching the Garmin Messenger
