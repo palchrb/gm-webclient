@@ -43,6 +43,7 @@ func (c *GarminClient) convertMessage(
 
 	// --- Media attachment (AVIF image or OGG audio from Garmin) ---
 	// Download from Garmin, transcode if needed, reupload to Matrix.
+	// Note: process media even when there's also a location/text body.
 	if msg.MediaID != nil {
 		mediaPart, err := c.bridgeIncomingMedia(ctx, intent, msg)
 		if err != nil {

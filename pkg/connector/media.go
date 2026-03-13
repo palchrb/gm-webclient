@@ -9,21 +9,33 @@ import (
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
-// ToAVIF converts an image (JPEG or PNG) to AVIF for sending to Garmin.
-// Garmin Messenger only accepts AVIF for image attachments.
-func ToAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
+// ToGarminAVIF converts an image to AVIF matching the iOS Garmin Messenger
+// encoding parameters observed from the app's debug menu:
+//
+//	resolution: 1920 (long edge), quality: 20/100, speed: 6, pixel format: YUV444
+//
+// quality 20/100 on libavif scale maps to approximately CRF 50 for libaom-av1.
+// cpu-used 6 balances encoding speed vs file size (app uses speed=6 on 0–10 scale).
+func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	srcFormat, err := mimeToFFmpegFormat(srcMime)
 	if err != nil {
 		return nil, err
 	}
-	// avif muxer + libaom-av1 encoder. -crf 35 is a good quality/size balance.
 	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
 	}
+	// Scale so the longest side is at most 1920px, keeping aspect ratio.
+	// CRF 50 matches quality=20/100 on libavif/libaom-av1.
+	// yuv444p matches the app's YUV444 pixel format setting.
+	// cpu-used 6 for fast encoding (app uses speed=6).
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
-		"-c:v", "libaom-av1", "-crf", "35", "-b:v", "0",
+		"-vf", "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:flags=lanczos",
+		"-c:v", "libaom-av1",
+		"-crf", "50", "-b:v", "0",
+		"-cpu-used", "6",
+		"-pix_fmt", "yuv444p",
 		"-f", "avif", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(src)
@@ -31,14 +43,14 @@ func ToAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("image→avif: %w\n%s", err, errBuf.String())
+		return nil, fmt.Errorf("image→garmin-avif: %w\n%s", err, errBuf.String())
 	}
 	return out.Bytes(), nil
 }
 
-// ToOGG converts audio (mp3, m4a, wav, etc.) to OGG Vorbis for sending to Garmin.
-// Garmin Messenger only accepts OGG for audio attachments.
-func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
+// ToGarminOGG converts audio to OGG Vorbis matching the Garmin Messenger
+// voice message format: 8000 Hz sample rate, mono, max 30 seconds.
+func ToGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	srcFormat, err := mimeToFFmpegFormat(srcMime)
 	if err != nil {
 		return nil, err
@@ -49,7 +61,11 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
-		"-c:a", "libvorbis", "-q:a", "4",
+		"-t", "30", // max 30 seconds
+		"-ar", "8000", // 8000 Hz sample rate (telephone quality)
+		"-ac", "1", // mono
+		"-c:a", "libvorbis",
+		"-q:a", "1", // low quality appropriate for 8kHz voice
 		"-f", "ogg", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(src)
@@ -57,7 +73,7 @@ func ToOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("audio→ogg: %w\n%s", err, errBuf.String())
+		return nil, fmt.Errorf("audio→garmin-ogg: %w\n%s", err, errBuf.String())
 	}
 	return out.Bytes(), nil
 }
@@ -88,17 +104,24 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 	}
 }
 
-// GarminMediaType returns the Garmin API media type for a given source MIME type.
-//
-// Garmin only accepts ImageAvif for images and AudioOgg for audio.
-func GarminMediaType(mime string) gm.MediaType {
+// isImageMIME reports whether the MIME type is a supported image format.
+func isImageMIME(mime string) bool {
 	switch mime {
 	case "image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif":
-		return gm.MediaTypeImageAvif
-	case "audio/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
-		"audio/aac", "audio/wav", "audio/wave", "audio/webm":
-		return gm.MediaTypeAudioOgg
-	default:
-		return ""
+		return true
 	}
+	return false
+}
+
+// isAudioMIME reports whether the MIME type is a supported audio format.
+func isAudioMIME(mime string) bool {
+	switch mime {
+	case "audio/ogg", "audio/ogg; codecs=vorbis",
+		"audio/mpeg", "audio/mp3",
+		"audio/mp4", "audio/m4a", "audio/aac",
+		"audio/wav", "audio/wave",
+		"audio/webm":
+		return true
+	}
+	return false
 }
