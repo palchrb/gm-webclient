@@ -81,12 +81,12 @@ func (c *GarminClient) Connect(ctx context.Context) {
 	// Use the same body-parsing logic as handleIncomingMessage.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
 		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
-		targetID := extractUUIDFromContent(targetContent)
+		targetID := c.resolveReactionTarget(msg, targetContent)
 		if !isReaction || targetID == "" {
 			c.log.Warn().
 				Str("msg_id", msg.MessageID.String()).
 				Str("body", derefStr(msg.MessageBody)).
-				Msg("ReceiveReaction: could not parse reaction body — routing to onMessage")
+				Msg("ReceiveReaction: could not resolve reaction target — routing to onMessage")
 			c.handleIncomingMessage(msg)
 			return
 		}
@@ -386,20 +386,26 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
 	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
 	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
-		// Try UUID resolution (works for audio/media messages whose target UUID
-		// is embedded in the body as "🎤(UUID)").
-		if targetID := extractUUIDFromContent(targetContent); targetID != "" {
+		// Fast path: audio/media reactions embed the target UUID in the body.
+		targetID := c.resolveReactionTarget(msg, targetContent)
+		if targetID == "" {
+			// Slow path: plain-text reactions have no UUID in the body.
+			// The REST conversation detail endpoint carries parentMessageId.
+			rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			targetID = c.resolveReactionParentID(rctx, msg)
+		}
+		if targetID != "" {
 			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
-		// Could not resolve target (plain-text reactions carry only a text snippet,
-		// not a UUID). Bridge as plain text so the message isn't lost.
+		// Could not resolve target — bridge as plain text so the message isn't lost.
 		c.log.Debug().
 			Str("msg_id", msg.MessageID.String()).
 			Str("emoji", emoji).
 			Str("target_content", targetContent).
 			Bool("is_remove", isRemove).
-			Msg("Reaction target UUID not found — bridging as text")
+			Msg("Reaction target not resolved — bridging as text")
 	}
 
 	convIDStr := msg.ConversationID.String()
@@ -526,6 +532,14 @@ func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 // Garmin has no reaction removal API, so we silently ignore this.
 func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2.MatrixReactionRemove) error {
 	return nil
+}
+
+// resolveReactionTarget finds the bridge messageId for the message being reacted to.
+// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
+// For plain text targets there is no machine-readable target identifier in the
+// wire payload, so "" is returned and the reaction is bridged as plain text.
+func (c *GarminClient) resolveReactionTarget(_ gm.MessageModel, targetContent string) string {
+	return extractUUIDFromContent(targetContent)
 }
 
 // parseGarminReactionBody parses a Garmin reaction message body.
