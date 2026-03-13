@@ -198,11 +198,31 @@ type MessageModel struct {
 	OtaUuid          *uuid.UUID         `json:"otaUuid,omitempty"`
 	FromUnitID       *string            `json:"fromUnitId,omitempty"`
 	IntendedUnitID   *string            `json:"intendedUnitId,omitempty"`
+
+	// UnknownFields captures any JSON fields not handled by this struct.
+	// Used for diagnostics — helps discover new protocol fields.
+	UnknownFields map[string]json.RawMessage `json:"-"`
+}
+
+// knownMessageModelFields is the set of JSON field names handled by MessageModel.
+// Any field not in this set is captured in UnknownFields.
+var knownMessageModelFields = map[string]bool{
+	"messageId": true, "conversationId": true, "parentMessageId": true,
+	"messageBody": true, "to": true, "from": true, "sentAt": true,
+	"receivedAt": true, "status": true, "userLocation": true,
+	"referencePoint": true, "messageType": true, "mapShareUrl": true,
+	"mapSharePassword": true, "liveTrackUrl": true, "fromDeviceType": true,
+	"mediaId": true, "mediaType": true, "mediaMetadata": true, "uuid": true,
+	"transcription": true, "otaUuid": true, "fromUnitId": true,
+	"intendedUnitId": true,
+	// Alias variants handled in UnmarshalJSON
+	"messageGuid": true, "conversationGuid": true, "parentMessageGuid": true,
 }
 
 // UnmarshalJSON handles both REST API field names (messageId, conversationId)
 // and FCM push notification field names (messageGuid, conversationGuid).
 // It also handles empty string UUIDs from FCM (treats them as nil).
+// Any unrecognised fields are captured in UnknownFields for diagnostics.
 func (m *MessageModel) UnmarshalJSON(data []byte) error {
 	type Alias MessageModel
 	aux := &struct {
@@ -242,6 +262,19 @@ func (m *MessageModel) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("parsing parentMessageGuid: %w", err)
 		}
 		m.ParentMessageID = &parsed
+	}
+
+	// Capture any fields not handled by the struct so they're visible in logs.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		for k, v := range raw {
+			if !knownMessageModelFields[k] {
+				if m.UnknownFields == nil {
+					m.UnknownFields = make(map[string]json.RawMessage)
+				}
+				m.UnknownFields[k] = v
+			}
+		}
 	}
 
 	return nil
