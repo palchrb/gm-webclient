@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -35,8 +36,11 @@ var _ bridgev2.IdentifierResolvingNetworkAPI = (*GarminClient)(nil)
 var _ bridgev2.ReactionHandlingNetworkAPI = (*GarminClient)(nil)
 
 func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.HermesAuth, phone string) *GarminClient {
+	hermesLog := login.Log.With().Str("component", "hermes").Logger()
 	api := gm.NewHermesAPI(auth)
-	sr := gm.NewHermesSignalR(auth)
+	sr := gm.NewHermesSignalR(auth,
+		gm.WithSignalRLogger(slog.New(newZerologSlogHandler(hermesLog))),
+	)
 	return &GarminClient{
 		connector: gc,
 		userLogin: login,
