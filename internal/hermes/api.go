@@ -262,12 +262,10 @@ func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string,
 }
 
 // SendReaction sends a reaction emoji to a specific message.
-// Garmin stores reactions separately from regular messages in its database,
-// using messageType="Reaction" and parentMessageId to identify the target.
+// The emoji is sent as the message body with parentMessageId identifying the target.
+// Note: "Reaction" is NOT a valid messageType on the server — we omit messageType entirely.
 func (api *HermesAPI) SendReaction(ctx context.Context, to []string, emoji string, parentMessageID uuid.UUID) (*SendMessageV2Response, error) {
-	reactionType := HermesMessageTypeReaction
 	return api.SendMessage(ctx, to, emoji,
-		WithMessageType(reactionType),
 		WithParentMessageID(parentMessageID),
 	)
 }

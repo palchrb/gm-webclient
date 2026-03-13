@@ -78,11 +78,31 @@ func (c *GarminClient) Connect(ctx context.Context) {
 	// ReceiveReaction is a dedicated hub method that Garmin may use for reactions.
 	// In practice, reactions arrive via ReceiveMessage (confirmed from live captures),
 	// but we register this handler in case the hub method is ever used.
-	// Use the same body-parsing logic as handleIncomingMessage.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
-		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
-		targetID := c.resolveReactionTarget(msg, targetContent)
-		if !isReaction || targetID == "" {
+		var targetID string
+		var emoji string
+		var isRemove bool
+
+		// If the hub method delivers a structured parentMessageId, use it directly.
+		if msg.ParentMessageID != nil {
+			targetID = msg.ParentMessageID.String()
+			emoji = derefStr(msg.MessageBody)
+		} else {
+			// Fall back to body-parsing + REST lookup (same as handleIncomingMessage).
+			var targetContent string
+			var isReaction bool
+			emoji, targetContent, isRemove, isReaction = parseGarminReactionBody(derefStr(msg.MessageBody))
+			if isReaction {
+				targetID = c.resolveReactionTarget(msg, targetContent)
+				if targetID == "" {
+					rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					targetID = c.resolveReactionParentID(rctx, msg)
+				}
+			}
+		}
+
+		if targetID == "" {
 			c.log.Warn().
 				Str("msg_id", msg.MessageID.String()).
 				Str("body", derefStr(msg.MessageBody)).
