@@ -10,13 +10,12 @@ import (
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
-// ToGarminAVIF converts an image to AVIF matching the iOS Garmin Messenger
-// encoding parameters observed from the app's debug menu:
-//
-//	resolution: 1920 (long edge), quality: 20/100, speed: 6, pixel format: YUV444
-//
-// quality 20/100 on libavif scale maps to approximately CRF 50 for libaom-av1.
-// cpu-used 6 balances encoding speed vs file size (app uses speed=6 on 0–10 scale).
+// ToGarminAVIF converts an image to AVIF for sending via Garmin Messenger.
+// The iOS app's debug menu reports: resolution 1920, quality 20/100, speed 6, YUV444.
+// The app's quality scale appears to be 0=worst/100=best, so 20 is low quality.
+// We default to CRF 30 (out of 63, lower=better) for visibly better results than
+// a strict quality-20 match, while still keeping file sizes reasonable.
+// cpu-used 6 balances encoding speed vs compression (app uses speed=6 on 0–10 scale).
 func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	srcFormat, err := mimeToFFmpegFormat(srcMime)
 	if err != nil {
@@ -44,7 +43,7 @@ func ToGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 		"-f", srcFormat, "-i", "pipe:0",
 		"-vf", "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:flags=lanczos",
 		"-c:v", "libaom-av1",
-		"-crf", "50", "-b:v", "0",
+		"-crf", "30", "-b:v", "0",
 		"-cpu-used", "6",
 		"-pix_fmt", "yuv444p",
 		"-y", tmpPath,
@@ -98,7 +97,7 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 		return "webp_pipe", nil
 	case "image/avif":
 		return "avif", nil
-	case "audio/ogg", "audio/ogg; codecs=vorbis":
+	case "audio/ogg", "audio/ogg; codecs=vorbis", "audio/ogg; codecs=opus":
 		return "ogg", nil
 	case "audio/mpeg", "audio/mp3":
 		return "mp3", nil
@@ -138,7 +137,7 @@ func isImageMIME(mime string) bool {
 // isAudioMIME reports whether the MIME type is a supported audio format.
 func isAudioMIME(mime string) bool {
 	switch mime {
-	case "audio/ogg", "audio/ogg; codecs=vorbis",
+	case "audio/ogg", "audio/ogg; codecs=vorbis", "audio/ogg; codecs=opus",
 		"audio/mpeg", "audio/mp3",
 		"audio/mp4", "audio/m4a", "audio/aac",
 		"audio/wav", "audio/wave",
