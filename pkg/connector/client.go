@@ -219,21 +219,6 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 		info.Name = &name
 	}
 
-	// Populate RecipientPhones in portal metadata so HandleMatrixMessage can send.
-	// The Garmin API sends by phone number, not conversation ID.
-	var recipientPhones []string
-	for _, m := range members {
-		addr := derefStr(m.Address)
-		if addr != "" && addr != c.phone {
-			recipientPhones = append(recipientPhones, addr)
-		}
-	}
-	if len(recipientPhones) > 0 {
-		if meta, ok := portal.Metadata.(*PortalMetadata); ok {
-			meta.RecipientPhones = recipientPhones
-		}
-	}
-
 	return info, nil
 }
 
