@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,12 @@ type GarminClient struct {
 	api       *gm.HermesAPI     // REST client
 	sr        *gm.HermesSignalR // SignalR real-time client
 	log       zerolog.Logger
+
+	// otaToMsgID maps a message's otaUuid (string) to its server-assigned
+	// messageId (string). Reactions arrive with otaUuid = target's otaUuid,
+	// so this lets us resolve the target messageId for the bridge DB lookup.
+	otaMu      sync.RWMutex
+	otaToMsgID map[string]string
 }
 
 var _ bridgev2.NetworkAPI = (*GarminClient)(nil)
@@ -42,13 +49,14 @@ func newGarminClient(gc *GarminConnector, login *bridgev2.UserLogin, auth *gm.He
 		gm.WithSignalRLogger(hermesLogger),
 	)
 	return &GarminClient{
-		connector: gc,
-		userLogin: login,
-		phone:     phone,
-		auth:      auth,
-		api:       api,
-		sr:        sr,
-		log:       login.Log.With().Str("component", "garmin-client").Logger(),
+		connector:  gc,
+		userLogin:  login,
+		phone:      phone,
+		auth:       auth,
+		api:        api,
+		sr:         sr,
+		log:        login.Log.With().Str("component", "garmin-client").Logger(),
+		otaToMsgID: make(map[string]string),
 	}
 }
 
@@ -81,12 +89,12 @@ func (c *GarminClient) Connect(ctx context.Context) {
 	// Use the same body-parsing logic as handleIncomingMessage.
 	c.sr.OnReaction(func(msg gm.MessageModel) {
 		emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody))
-		targetID := extractUUIDFromContent(targetContent)
+		targetID := c.resolveReactionTarget(msg, targetContent)
 		if !isReaction || targetID == "" {
 			c.log.Warn().
 				Str("msg_id", msg.MessageID.String()).
 				Str("body", derefStr(msg.MessageBody)).
-				Msg("ReceiveReaction: could not parse reaction body — routing to onMessage")
+				Msg("ReceiveReaction: could not resolve reaction target — routing to onMessage")
 			c.handleIncomingMessage(msg)
 			return
 		}
@@ -386,24 +394,28 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
 	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
 	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
-		// Try UUID resolution (works for audio/media messages whose target UUID
-		// is embedded in the body as "🎤(UUID)").
-		if targetID := extractUUIDFromContent(targetContent); targetID != "" {
+		if targetID := c.resolveReactionTarget(msg, targetContent); targetID != "" {
 			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
-		// Could not resolve target (plain-text reactions carry only a text snippet,
-		// not a UUID). Bridge as plain text so the message isn't lost.
+		// Could not resolve target — bridge as plain text so the message isn't lost.
 		c.log.Debug().
 			Str("msg_id", msg.MessageID.String()).
 			Str("emoji", emoji).
 			Str("target_content", targetContent).
 			Bool("is_remove", isRemove).
-			Msg("Reaction target UUID not found — bridging as text")
+			Msg("Reaction target not resolved — bridging as text")
 	}
 
 	convIDStr := msg.ConversationID.String()
 	msgIDStr := msg.MessageID.String()
+
+	// Register this message's otaUuid so reactions targeting it can be resolved.
+	if msg.OtaUuid != nil {
+		c.otaMu.Lock()
+		c.otaToMsgID[msg.OtaUuid.String()] = msgIDStr
+		c.otaMu.Unlock()
+	}
 	senderRaw := derefStr(msg.From)
 
 	// The Garmin API returns the sender as either a phone number (+47...)
@@ -526,6 +538,24 @@ func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 // Garmin has no reaction removal API, so we silently ignore this.
 func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2.MatrixReactionRemove) error {
 	return nil
+}
+
+// resolveReactionTarget finds the bridge messageId for the message being reacted to.
+// Primary: msg.OtaUuid is the target message's otaUuid (looked up in otaToMsgID map).
+// Fallback: targetContent contains a UUID in parentheses (audio/media messages).
+// Returns "" if the target cannot be resolved.
+func (c *GarminClient) resolveReactionTarget(msg gm.MessageModel, targetContent string) string {
+	// Primary path: Garmin sets otaUuid on the reaction to the target's otaUuid.
+	if msg.OtaUuid != nil {
+		c.otaMu.RLock()
+		targetID, found := c.otaToMsgID[msg.OtaUuid.String()]
+		c.otaMu.RUnlock()
+		if found {
+			return targetID
+		}
+	}
+	// Fallback: audio/media targets embed their UUID as "🎤(UUID)" in the body.
+	return extractUUIDFromContent(targetContent)
 }
 
 // parseGarminReactionBody parses a Garmin reaction message body.
