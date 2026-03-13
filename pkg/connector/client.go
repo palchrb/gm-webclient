@@ -341,7 +341,15 @@ func (c *GarminClient) sendMedia(ctx context.Context, msg *bridgev2.MatrixMessag
 		return nil, fmt.Errorf("unsupported media MIME type for Garmin: %s", srcMime)
 	}
 
-	result, err := c.api.SendMediaMessage(ctx, recipients, msg.Content.Body, transcoded, gmMediaType)
+	// In Matrix, Body is always set (filename fallback when no caption).
+	// FileName is only present when the user typed an actual caption,
+	// in which case Body holds the caption and FileName holds the real filename.
+	// Send an empty caption when the user didn't type one.
+	caption := ""
+	if msg.Content.FileName != "" {
+		caption = msg.Content.Body
+	}
+	result, err := c.api.SendMediaMessage(ctx, recipients, caption, transcoded, gmMediaType)
 	if err != nil {
 		return nil, fmt.Errorf("SendMediaMessage: %w", err)
 	}
