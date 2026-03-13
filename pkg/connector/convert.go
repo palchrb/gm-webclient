@@ -235,6 +235,39 @@ func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.Messa
 	return msg.MessageID, nil
 }
 
+// resolveReactionParentID returns the networkid.MessageID of the message being
+// reacted to. It mirrors resolveMediaMessageUUID: the SignalR push has
+// parentMessageId=null, but the REST conversation detail endpoint always
+// includes it. Returns "" if the lookup fails or the field is absent.
+func (c *GarminClient) resolveReactionParentID(ctx context.Context, msg gm.MessageModel) string {
+	if msg.ParentMessageID != nil {
+		return msg.ParentMessageID.String()
+	}
+
+	detail, err := c.api.GetConversationDetail(ctx, msg.ConversationID, gm.WithDetailLimit(100))
+	if err != nil {
+		c.log.Warn().Err(err).
+			Str("msg_id", msg.MessageID.String()).
+			Msg("Reaction parent lookup: GetConversationDetail failed")
+		return ""
+	}
+
+	for _, m := range detail.Messages {
+		if m.MessageID != msg.MessageID {
+			continue
+		}
+		if m.ParentMessageID != nil {
+			return m.ParentMessageID.String()
+		}
+		break
+	}
+
+	c.log.Warn().
+		Str("msg_id", msg.MessageID.String()).
+		Msg("Reaction parent lookup: parentMessageId not set in REST response")
+	return ""
+}
+
 // derefFloat64 safely dereferences a *float64.
 func derefFloat64(f *float64) float64 {
 	if f == nil {

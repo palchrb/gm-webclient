@@ -386,7 +386,16 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
 	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
 	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
-		if targetID := c.resolveReactionTarget(msg, targetContent); targetID != "" {
+		// Fast path: audio/media reactions embed the target UUID in the body.
+		targetID := c.resolveReactionTarget(msg, targetContent)
+		if targetID == "" {
+			// Slow path: plain-text reactions have no UUID in the body.
+			// The REST conversation detail endpoint carries parentMessageId.
+			rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			targetID = c.resolveReactionParentID(rctx, msg)
+		}
+		if targetID != "" {
 			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
 			return
 		}
