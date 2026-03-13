@@ -74,8 +74,8 @@ func (c *GarminClient) convertMessage(
 			}
 		} else {
 			if bodyText != "" {
-				// Prefer sending a single media event with caption instead of creating
-				// multiple message parts for the same remote message.
+				// Save the filename before overwriting body with the caption.
+				mediaPart.Content.FileName = mediaPart.Content.Body
 				mediaPart.Content.Body = bodyText
 			}
 			parts = append(parts, mediaPart)
@@ -159,7 +159,6 @@ func (c *GarminClient) bridgeIncomingMedia(
 		filename = "image.avif"
 
 	case gm.MediaTypeAudioOgg:
-		// OGG is already well-supported in Matrix clients.
 		uploadData = data
 		mxMsgType = event.MsgAudio
 		mimeType = "audio/ogg"
@@ -184,6 +183,18 @@ func (c *GarminClient) bridgeIncomingMedia(
 			MimeType: mimeType,
 			Size:     len(uploadData),
 		},
+	}
+
+	if mxMsgType == event.MsgAudio {
+		durationMS := ProbeAudioDurationMS(ctx, uploadData, "ogg")
+		if durationMS > 0 {
+			content.Info.Duration = durationMS
+		}
+		content.MSC3245Voice = &event.MSC3245Voice{}
+		content.MSC1767Audio = &event.MSC1767Audio{
+			Duration: durationMS,
+			Waveform: []int{},
+		}
 	}
 
 	return &bridgev2.ConvertedMessagePart{
