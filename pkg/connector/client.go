@@ -75,44 +75,6 @@ func (c *GarminClient) Connect(ctx context.Context) {
 		c.handleIncomingMessage(msg)
 	})
 
-	// ReceiveReaction is a dedicated hub method that Garmin may use for reactions.
-	// In practice, reactions arrive via ReceiveMessage (confirmed from live captures),
-	// but we register this handler in case the hub method is ever used.
-	c.sr.OnReaction(func(msg gm.MessageModel) {
-		var targetID string
-		var emoji string
-		var isRemove bool
-
-		// If the hub method delivers a structured parentMessageId, use it directly.
-		if msg.ParentMessageID != nil {
-			targetID = msg.ParentMessageID.String()
-			emoji = derefStr(msg.MessageBody)
-		} else {
-			// Fall back to body-parsing + REST lookup (same as handleIncomingMessage).
-			var targetContent string
-			var isReaction bool
-			emoji, targetContent, isRemove, isReaction = parseGarminReactionBody(derefStr(msg.MessageBody))
-			if isReaction {
-				targetID = c.resolveReactionTarget(msg, targetContent)
-				if targetID == "" {
-					rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-					defer cancel()
-					targetID = c.resolveReactionParentID(rctx, msg)
-				}
-			}
-		}
-
-		if targetID == "" {
-			c.log.Warn().
-				Str("msg_id", msg.MessageID.String()).
-				Str("body", derefStr(msg.MessageBody)).
-				Msg("ReceiveReaction: could not resolve reaction target — routing to onMessage")
-			c.handleIncomingMessage(msg)
-			return
-		}
-		c.handleIncomingReaction(msg, emoji, targetID, isRemove)
-	})
-
 	c.sr.OnStatusUpdate(func(upd gm.MessageStatusUpdate) {
 		c.handleStatusUpdate(upd)
 	})
@@ -399,35 +361,6 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 		return
 	}
 
-	// Detect reaction messages and route them as m.reaction events.
-	// Garmin sends reactions as regular messages (messageType="Unknown", parentMessageId=null).
-	// The reaction and its target are encoded entirely in the message body:
-	//   add:    "\u200b<emoji>\u200b til «\u200a\u2009<target-content>\u200a»"
-	//   remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<target-content>\u200a»"
-	// For audio/media targets the content contains the target UUID: "🎤(UUID)".
-	if emoji, targetContent, isRemove, isReaction := parseGarminReactionBody(derefStr(msg.MessageBody)); isReaction {
-		// Fast path: audio/media reactions embed the target UUID in the body.
-		targetID := c.resolveReactionTarget(msg, targetContent)
-		if targetID == "" {
-			// Slow path: plain-text reactions have no UUID in the body.
-			// The REST conversation detail endpoint carries parentMessageId.
-			rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			targetID = c.resolveReactionParentID(rctx, msg)
-		}
-		if targetID != "" {
-			c.handleIncomingReaction(msg, emoji, targetID, isRemove)
-			return
-		}
-		// Could not resolve target — bridge as plain text so the message isn't lost.
-		c.log.Debug().
-			Str("msg_id", msg.MessageID.String()).
-			Str("emoji", emoji).
-			Str("target_content", targetContent).
-			Bool("is_remove", isRemove).
-			Msg("Reaction target not resolved — bridging as text")
-	}
-
 	convIDStr := msg.ConversationID.String()
 	msgIDStr := msg.MessageID.String()
 	senderRaw := derefStr(msg.From)
@@ -469,51 +402,6 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	c.sr.MarkAsDelivered(msg.ConversationID, msg.MessageID)
 }
 
-// handleIncomingReaction converts a Garmin reaction message to a Matrix m.reaction event.
-// targetID is the Garmin message UUID (lowercase) of the reacted-to message,
-// extracted from the body by parseGarminReactionBody.
-// isRemove=true produces a RemoteEventReactionRemove instead of RemoteEventReaction.
-func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, emoji, targetID string, isRemove bool) {
-	convIDStr := msg.ConversationID.String()
-	senderUUID := derefStr(msg.From)
-
-	evtType := bridgev2.RemoteEventReaction
-	if isRemove {
-		evtType = bridgev2.RemoteEventReactionRemove
-	}
-
-	c.log.Debug().
-		Str("emoji", emoji).
-		Str("target_msg_id", targetID).
-		Str("conversation_id", convIDStr).
-		Bool("is_remove", isRemove).
-		Msg("Incoming Garmin reaction")
-
-	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Reaction{
-		EventMeta: simplevent.EventMeta{
-			Type: evtType,
-			LogContext: func(ctx zerolog.Context) zerolog.Context {
-				return ctx.
-					Str("garmin_msg_id", msg.MessageID.String()).
-					Str("target_msg_id", targetID).
-					Str("conversation_id", convIDStr).
-					Str("sender_uuid", senderUUID)
-			},
-			PortalKey: networkid.PortalKey{
-				ID:       portalIDFromConversation(convIDStr),
-				Receiver: c.userLogin.ID,
-			},
-			Sender: bridgev2.EventSender{
-				Sender:   ghostIDFromHermesID(senderUUID),
-				IsFromMe: senderUUID == gm.PhoneToHermesUserID(c.phone),
-			},
-			Timestamp: derefTime(msg.SentAt),
-		},
-		TargetMessage: networkid.MessageID(targetID),
-		Emoji:         emoji,
-	})
-}
-
 // PreHandleMatrixReaction is called first to identify the reaction for deduplication.
 func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
 	return bridgev2.MatrixReactionPreResponse{
@@ -523,28 +411,16 @@ func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.
 	}, nil
 }
 
-// HandleMatrixReaction sends a Matrix reaction to Garmin.
-// Uses the Garmin reaction API: messageType="Reaction" + parentMessageId.
-// The target message's Garmin UUID is read from TargetMessage.ID.
+// HandleMatrixReaction sends a Matrix reaction to Garmin as a plain text message.
+// The emoji is sent as the message body; Garmin does not have a native reaction API.
 func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
 	meta, ok := msg.Portal.Metadata.(*PortalMetadata)
 	if !ok || len(meta.RecipientPhones) == 0 {
 		return nil, fmt.Errorf("portal has no recipient phone numbers — cannot send reaction")
 	}
-
-	emoji := msg.Content.RelatesTo.Key
-
-	// The target message ID is the Garmin message UUID stored as networkid.MessageID.
-	parentMsgID, err := uuid.Parse(string(msg.TargetMessage.ID))
-	if err != nil {
-		return nil, fmt.Errorf("invalid target message ID %q: %w", msg.TargetMessage.ID, err)
-	}
-
-	if _, err := c.api.SendReaction(ctx, meta.RecipientPhones, emoji, parentMsgID); err != nil {
+	if _, err := c.api.SendMessage(ctx, meta.RecipientPhones, msg.Content.RelatesTo.Key); err != nil {
 		return nil, fmt.Errorf("send reaction to Garmin: %w", err)
 	}
-
-	// Return an empty Reaction; the bridge framework fills in the standard fields.
 	return &database.Reaction{}, nil
 }
 
@@ -552,110 +428,6 @@ func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.M
 // Garmin has no reaction removal API, so we silently ignore this.
 func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2.MatrixReactionRemove) error {
 	return nil
-}
-
-// resolveReactionTarget finds the bridge messageId for the message being reacted to.
-// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
-// For plain text targets there is no machine-readable target identifier in the
-// wire payload, so "" is returned and the reaction is bridged as plain text.
-func (c *GarminClient) resolveReactionTarget(_ gm.MessageModel, targetContent string) string {
-	return extractUUIDFromContent(targetContent)
-}
-
-// parseGarminReactionBody parses a Garmin reaction message body.
-// Returns:
-//   - emoji: the reaction emoji (e.g. "❤️")
-//   - targetContent: the raw quoted target content, stripped of invisible chars
-//   - isRemove: true for "Fjernet … fra «»" (remove operation)
-//   - ok: true if the body matched the reaction format
-//
-// Confirmed wire formats (from live SignalR capture):
-//
-//	Add:    "\u200b<emoji>\u200b til «\u200a\u2009<content>\u200a»"   (Norwegian)
-//	Remove: "Fjernet \u200b<emoji>\u200b fra «\u200a\u2009<content>\u200a»" (Norwegian)
-//	Add:    "\u200b<emoji>\u200b to "<content>""                       (English, assumed)
-//
-// For audio/media targets, targetContent contains a UUID in parens: "🎤(UUID)".
-// For text targets, targetContent is a plain text snippet (no UUID available).
-// Use extractUUIDFromContent to attempt UUID resolution from targetContent.
-func parseGarminReactionBody(body string) (emoji, targetContent string, isRemove, ok bool) {
-	s := body
-
-	// Norwegian remove prefix.
-	if strings.HasPrefix(s, "Fjernet ") {
-		s = s[len("Fjernet "):]
-		isRemove = true
-	}
-
-	// Strip the ZWS that wraps the emoji.
-	s = strings.TrimPrefix(s, "\u200b")
-
-	// Extract the emoji: everything up to the next ZWS.
-	zwsIdx := strings.Index(s, "\u200b")
-	if zwsIdx <= 0 {
-		return
-	}
-	emoji = s[:zwsIdx]
-	s = s[zwsIdx+len("\u200b"):]
-
-	// Validate: all runes in the emoji segment must be non-ASCII.
-	for _, r := range emoji {
-		if r <= 127 {
-			emoji = ""
-			return
-		}
-	}
-
-	// Strip the separator between emoji and quoted body.
-	s = strings.TrimLeft(s, " ")
-
-	// Find the opening guillemet (« or ") and closing (» or ").
-	var content string
-	switch {
-	case strings.HasPrefix(s, "til «") || strings.HasPrefix(s, "fra «"):
-		after := s[len("til «"):]
-		if isRemove {
-			after = s[len("fra «"):]
-		}
-		closeIdx := strings.LastIndex(after, "»")
-		if closeIdx < 0 {
-			return
-		}
-		content = after[:closeIdx]
-	case strings.HasPrefix(s, `to "`):
-		after := s[len(`to "`):]
-		closeIdx := strings.LastIndex(after, `"`)
-		if closeIdx < 0 {
-			return
-		}
-		content = after[:closeIdx]
-	default:
-		return
-	}
-
-	// Strip invisible padding characters.
-	targetContent = strings.Trim(content, "\u200a\u2009\u200b ")
-	ok = true
-	return
-}
-
-// extractUUIDFromContent looks for a UUID in parentheses at the end of content,
-// e.g. "🎤(E1378547-4B67-4A23-9AAF-5DC45AEA4716)" → "e1378547-4b67-4a23-9aaf-5dc45aea4716".
-// Returns empty string if no valid UUID is found.
-func extractUUIDFromContent(content string) string {
-	start := strings.LastIndex(content, "(")
-	if start < 0 {
-		return ""
-	}
-	end := strings.LastIndex(content, ")")
-	if end <= start {
-		return ""
-	}
-	candidate := content[start+1 : end]
-	if _, err := uuid.Parse(candidate); err != nil {
-		return ""
-	}
-	return strings.ToLower(candidate)
 }
 
 // handleStatusUpdate is the sr.OnStatusUpdate callback.

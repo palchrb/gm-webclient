@@ -57,17 +57,7 @@ const (
 	HermesMessageTypeUnknown        HermesMessageType = "Unknown"
 	HermesMessageTypeMapShare       HermesMessageType = "MapShare"
 	HermesMessageTypeReferencePoint HermesMessageType = "ReferencePoint"
-	// HermesMessageTypeReaction is set on reaction messages.
-	// Garmin stores reactions separately in the Android database and sends
-	// them with this messageType alongside ParentMessageID identifying the
-	// reacted-to message.
-	HermesMessageTypeReaction HermesMessageType = "Reaction"
 )
-
-// IsReaction reports whether this message is a reaction.
-func (t *HermesMessageType) IsReaction() bool {
-	return t != nil && *t == HermesMessageTypeReaction
-}
 
 // MediaType represents the type of a media attachment.
 type MediaType string

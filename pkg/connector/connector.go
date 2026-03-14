@@ -13,7 +13,9 @@ import (
 	"go.mau.fi/util/configupgrade"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/id"
 )
 
 // GarminConnector is the top-level NetworkConnector for the bridge.
@@ -66,10 +68,22 @@ func (gc *GarminConnector) GetBridgeInfoVersion() (info, capabilities int) {
 }
 
 func (gc *GarminConnector) GetName() bridgev2.BridgeName {
+	// Use the bot's configured avatar as the network/space icon so the Matrix
+	// space room reflects the same avatar as set in config.yaml under appservice.bot.avatar.
+	// The framework updates the space room avatar on every restart if it changed.
+	var networkIcon id.ContentURIString
+	if gc.br != nil {
+		if mc, ok := gc.br.Matrix.(*matrix.Connector); ok {
+			avatar := mc.Config.AppService.Bot.Avatar
+			if avatar != "" && avatar != "remove" {
+				networkIcon = id.ContentURIString(avatar)
+			}
+		}
+	}
 	return bridgev2.BridgeName{
 		DisplayName:      "Garmin Messenger",
 		NetworkURL:       "https://explore.garmin.com/en-US/inreach/",
-		NetworkIcon:      "mxc://maunium.net/REPLACE_WITH_GARMIN_ICON_MXC_URI",
+		NetworkIcon:      networkIcon,
 		NetworkID:        "garmin-messenger",
 		BeeperBridgeType: "github.com/yourusername/matrix-garmin-messenger",
 		DefaultPort:      29340,

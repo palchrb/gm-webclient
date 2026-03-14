@@ -261,15 +261,6 @@ func (api *HermesAPI) SendMessage(ctx context.Context, to []string, body string,
 	return &result, nil
 }
 
-// SendReaction sends a reaction emoji to a specific message.
-// The emoji is sent as the message body with parentMessageId identifying the target.
-// Note: "Reaction" is NOT a valid messageType on the server — we omit messageType entirely.
-func (api *HermesAPI) SendReaction(ctx context.Context, to []string, emoji string, parentMessageID uuid.UUID) (*SendMessageV2Response, error) {
-	return api.SendMessage(ctx, to, emoji,
-		WithParentMessageID(parentMessageID),
-	)
-}
-
 // GetMessageDeviceMetadata returns satellite device metadata for messages.
 func (api *HermesAPI) GetMessageDeviceMetadata(ctx context.Context, ids []SimpleCompoundMessageId) ([]MessageDeviceMetadataV2, error) {
 	var result []MessageDeviceMetadataV2
