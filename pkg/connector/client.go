@@ -101,6 +101,30 @@ func (c *GarminClient) Connect(ctx context.Context) {
 			c.log.Err(err).Msg("SignalR Start returned error")
 		}
 	}()
+
+	// The framework only sets the space room avatar on initial creation.
+	// Update it on every connect so it reflects the current bot avatar from config.
+	go c.ensureSpaceAvatar(ctx)
+}
+
+// ensureSpaceAvatar updates the space room's m.room.avatar to match the
+// NetworkIcon returned by GetName() (which uses the bot's configured avatar).
+// Called on every Connect() so that avatar changes in config.yaml take effect
+// on the next restart without needing to recreate the space room.
+func (c *GarminClient) ensureSpaceAvatar(ctx context.Context) {
+	icon := c.connector.br.Network.GetName().NetworkIcon
+	if icon == "" {
+		return
+	}
+	spaceRoom, err := c.userLogin.GetSpaceRoom(ctx)
+	if err != nil || spaceRoom == "" {
+		return
+	}
+	if _, err := c.userLogin.Bridge.Bot.SendState(ctx, spaceRoom, event.StateRoomAvatar, "", &event.Content{
+		Parsed: &event.RoomAvatarEventContent{URL: icon},
+	}, time.Now()); err != nil {
+		c.log.Warn().Err(err).Msg("Failed to update space room avatar")
+	}
 }
 
 // Disconnect stops the SignalR connection cleanly.
