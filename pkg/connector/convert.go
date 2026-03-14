@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -22,6 +23,15 @@ func (c *GarminClient) convertMessage(
 	var parts []*bridgev2.ConvertedMessagePart
 
 	body := derefStr(msg.MessageBody)
+	// Strip invisible delimiter characters Garmin uses in reaction message bodies
+	// (\u200b zero-width space, \u200a hair space, \u2009 thin space).
+	body = strings.Map(func(r rune) rune {
+		switch r {
+		case '\u200b', '\u200a', '\u2009':
+			return -1
+		}
+		return r
+	}, body)
 	bodyText := body
 	if msg.UserLocation != nil {
 		lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
@@ -233,39 +243,6 @@ func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.Messa
 		Str("conversation_id", msg.ConversationID.String()).
 		Msg("Media message UUID not present in detail response, falling back to MessageID")
 	return msg.MessageID, nil
-}
-
-// resolveReactionParentID returns the networkid.MessageID of the message being
-// reacted to. It mirrors resolveMediaMessageUUID: the SignalR push has
-// parentMessageId=null, but the REST conversation detail endpoint always
-// includes it. Returns "" if the lookup fails or the field is absent.
-func (c *GarminClient) resolveReactionParentID(ctx context.Context, msg gm.MessageModel) string {
-	if msg.ParentMessageID != nil {
-		return msg.ParentMessageID.String()
-	}
-
-	detail, err := c.api.GetConversationDetail(ctx, msg.ConversationID, gm.WithDetailLimit(100))
-	if err != nil {
-		c.log.Warn().Err(err).
-			Str("msg_id", msg.MessageID.String()).
-			Msg("Reaction parent lookup: GetConversationDetail failed")
-		return ""
-	}
-
-	for _, m := range detail.Messages {
-		if m.MessageID != msg.MessageID {
-			continue
-		}
-		if m.ParentMessageID != nil {
-			return m.ParentMessageID.String()
-		}
-		break
-	}
-
-	c.log.Warn().
-		Str("msg_id", msg.MessageID.String()).
-		Msg("Reaction parent lookup: parentMessageId not set in REST response")
-	return ""
 }
 
 // derefFloat64 safely dereferences a *float64.
