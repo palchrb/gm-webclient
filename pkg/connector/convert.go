@@ -32,6 +32,18 @@ func (c *GarminClient) convertMessage(
 		}
 		return r
 	}, body)
+	// If Garmin auto-transcribed a voice message, append the transcription
+	// as text so it's readable even when the audio can't play.
+	if msg.Transcription != nil {
+		if t := strings.TrimSpace(*msg.Transcription); t != "" {
+			if body != "" {
+				body += "\n" + t
+			} else {
+				body = t
+			}
+		}
+	}
+
 	bodyText := body
 	if msg.UserLocation != nil {
 		lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
