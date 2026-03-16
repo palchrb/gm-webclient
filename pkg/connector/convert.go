@@ -32,17 +32,6 @@ func (c *GarminClient) convertMessage(
 		}
 		return r
 	}, body)
-	// If Garmin auto-transcribed a voice message, append the transcription
-	// as text so it's readable even when the audio can't play.
-	if msg.Transcription != nil {
-		if t := strings.TrimSpace(*msg.Transcription); t != "" {
-			if body != "" {
-				body += "\n" + t
-			} else {
-				body = t
-			}
-		}
-	}
 
 	bodyText := body
 	if msg.UserLocation != nil {
@@ -67,7 +56,7 @@ func (c *GarminClient) convertMessage(
 	// Download from Garmin, transcode if needed, reupload to Matrix.
 	// Note: process media even when there's also a location/text body.
 	if msg.MediaID != nil {
-		mediaPart, err := c.bridgeIncomingMedia(ctx, intent, msg)
+		mediaPart, transcription, err := c.bridgeIncomingMedia(ctx, intent, msg)
 		if err != nil {
 			// Don't drop the message. If we have text/location content, include the
 			// media failure as a suffix to keep one Matrix part and avoid duplicate
@@ -95,8 +84,23 @@ func (c *GarminClient) convertMessage(
 				})
 			}
 		} else {
+			// Transcription comes from the REST detail response (SignalR omits it).
+			// Prefer REST-sourced transcription; fall back to SignalR if somehow present.
+			effectiveTrans := transcription
+			if effectiveTrans == nil {
+				effectiveTrans = msg.Transcription
+			}
+			if effectiveTrans != nil {
+				if t := strings.TrimSpace(*effectiveTrans); t != "" {
+					if bodyText != "" {
+						bodyText += "\n" + t
+					} else {
+						bodyText = t
+					}
+				}
+			}
 			if bodyText != "" {
-				// Save the filename before overwriting body with the caption.
+				// Save the filename before overwriting body with the caption/transcription.
 				mediaPart.Content.FileName = mediaPart.Content.Body
 				mediaPart.Content.Body = bodyText
 			}
@@ -131,6 +135,7 @@ func (c *GarminClient) convertMessage(
 
 // bridgeIncomingMedia downloads a Garmin media attachment, transcodes it to a
 // Matrix-friendly format, and reuploads it to the Matrix media repository.
+// It also returns any transcription found in the REST detail response.
 //
 // Garmin sends AVIF images and OGG audio.
 // Keep AVIF as-is (no conversion) and keep OGG as-is.
@@ -138,17 +143,17 @@ func (c *GarminClient) bridgeIncomingMedia(
 	ctx context.Context,
 	intent bridgev2.MatrixAPI,
 	msg gm.MessageModel,
-) (*bridgev2.ConvertedMessagePart, error) {
+) (*bridgev2.ConvertedMessagePart, *string, error) {
 	if msg.MediaID == nil {
-		return nil, fmt.Errorf("message has no media ID")
+		return nil, nil, fmt.Errorf("message has no media ID")
 	}
 	if msg.MediaType == nil {
-		return nil, fmt.Errorf("message has no media type")
+		return nil, nil, fmt.Errorf("message has no media type")
 	}
 
-	msgUUID, err := c.resolveMediaMessageUUID(ctx, msg)
+	msgUUID, transcription, err := c.resolveMediaMessageDetails(ctx, msg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	mediaID := *msg.MediaID
@@ -164,7 +169,7 @@ func (c *GarminClient) bridgeIncomingMedia(
 		mediaType,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("DownloadMedia: %w", err)
+		return nil, nil, fmt.Errorf("DownloadMedia: %w", err)
 	}
 
 	// Determine Matrix event type and MIME.
@@ -187,13 +192,13 @@ func (c *GarminClient) bridgeIncomingMedia(
 		filename = "voice.ogg"
 
 	default:
-		return nil, fmt.Errorf("unknown Garmin media type: %s", mediaType)
+		return nil, nil, fmt.Errorf("unknown Garmin media type: %s", mediaType)
 	}
 
 	// Upload to Matrix media repository via the ghost user's intent.
 	mxcURI, encryptedFile, err := intent.UploadMedia(ctx, "", uploadData, filename, mimeType)
 	if err != nil {
-		return nil, fmt.Errorf("UploadMedia: %w", err)
+		return nil, nil, fmt.Errorf("UploadMedia: %w", err)
 	}
 
 	content := &event.MessageEventContent{
@@ -222,22 +227,23 @@ func (c *GarminClient) bridgeIncomingMedia(
 	return &bridgev2.ConvertedMessagePart{
 		Type:    event.EventMessage,
 		Content: content,
-	}, nil
+	}, transcription, nil
 }
 
-// resolveMediaMessageUUID finds the UUID required by Hermes media download.
+// resolveMediaMessageDetails finds the UUID and transcription required for
+// media message handling.
 //
-// SignalR events may omit MessageModel.UUID for some incoming messages. In that
-// case, fetch recent conversation details and find the matching message entry.
+// SignalR events may omit MessageModel.UUID and MessageModel.Transcription.
+// In that case, fetch recent conversation details and find the matching entry.
 // As a final fallback, use MessageID as UUID (best-effort).
-func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.MessageModel) (uuid.UUID, error) {
+func (c *GarminClient) resolveMediaMessageDetails(ctx context.Context, msg gm.MessageModel) (uuid.UUID, *string, error) {
 	if msg.UUID != nil {
-		return *msg.UUID, nil
+		return *msg.UUID, msg.Transcription, nil
 	}
 
 	detail, err := c.api.GetConversationDetail(ctx, msg.ConversationID, gm.WithDetailLimit(100))
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("message has no UUID and lookup failed: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("message has no UUID and lookup failed: %w", err)
 	}
 
 	for _, m := range detail.Messages {
@@ -245,7 +251,7 @@ func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.Messa
 			continue
 		}
 		if m.UUID != nil {
-			return *m.UUID, nil
+			return *m.UUID, m.Transcription, nil
 		}
 		break
 	}
@@ -254,7 +260,7 @@ func (c *GarminClient) resolveMediaMessageUUID(ctx context.Context, msg gm.Messa
 		Str("msg_id", msg.MessageID.String()).
 		Str("conversation_id", msg.ConversationID.String()).
 		Msg("Media message UUID not present in detail response, falling back to MessageID")
-	return msg.MessageID, nil
+	return msg.MessageID, nil, nil
 }
 
 // derefFloat64 safely dereferences a *float64.
