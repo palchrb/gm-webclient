@@ -598,7 +598,14 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 		return
 	}
 	msgStatus := *upd.MessageStatus
-	if msgStatus != gm.MessageStatusRead && msgStatus != gm.MessageStatusDelivered {
+
+	var evtType bridgev2.RemoteEventType
+	switch msgStatus {
+	case gm.MessageStatusRead:
+		evtType = bridgev2.RemoteEventReadReceipt
+	case gm.MessageStatusDelivered:
+		evtType = bridgev2.RemoteEventDeliveryReceipt
+	default:
 		return
 	}
 
@@ -607,7 +614,7 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
-			Type: bridgev2.RemoteEventReadReceipt,
+			Type: evtType,
 			PortalKey: networkid.PortalKey{
 				ID:       portalIDFromConversation(convIDStr),
 				Receiver: c.userLogin.ID,
