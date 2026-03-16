@@ -3,7 +3,9 @@ package connector
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -333,7 +335,7 @@ func ghostIDForRecipient(recipient string) networkid.UserID {
 	return networkid.UserID(strings.ToLower(recipient))
 }
 
-// GetUserInfo returns ghost profile data (displayname, identifiers).
+// GetUserInfo returns ghost profile data (displayname, avatar, identifiers).
 // The ghost ID is the Hermes UUID, but we want to show a human-friendly name.
 func (c *GarminClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	id := string(ghost.ID)
@@ -347,21 +349,45 @@ func (c *GarminClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 	}
 
 	// Regular Hermes UUID: try to resolve to a phone number via conversation members.
-	if phone, name := c.lookupPhoneFromUUID(ctx, id); phone != "" {
+	if phone, name, imageURL := c.lookupPhoneFromUUID(ctx, id); phone != "" {
 		displayName := name
 		if displayName == "" {
 			displayName = phone
 		}
-		return &bridgev2.UserInfo{
+		info := &bridgev2.UserInfo{
 			Identifiers: []string{"tel:" + phone},
 			Name:        ptrStr(displayName),
-		}, nil
+		}
+		if imageURL != "" {
+			info.Avatar = avatarFromURL(imageURL)
+		}
+		return info, nil
 	}
 
 	// Fallback: use the Hermes UUID itself as the display name.
 	return &bridgev2.UserInfo{
 		Name: ptrStr(id),
 	}, nil
+}
+
+// avatarFromURL builds a bridgev2.Avatar that lazily downloads from a remote HTTP URL.
+// The URL is used as the AvatarID so the framework skips re-upload when unchanged.
+func avatarFromURL(url string) *bridgev2.Avatar {
+	return &bridgev2.Avatar{
+		ID: networkid.AvatarID(url),
+		Get: func(ctx context.Context) ([]byte, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			return io.ReadAll(resp.Body)
+		},
+	}
 }
 
 // IsThisUser checks whether a ghost ID belongs to the logged-in user.
@@ -711,11 +737,11 @@ func (c *GarminClient) resolveNewChat(ctx context.Context, portalIDStr string, g
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 // lookupPhoneFromUUID scans conversations to find a member matching hermesUUID.
-// Returns (phone, displayName) or ("", "") if not found.
-func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string) {
+// Returns (phone, displayName, imageURL) or ("", "", "") if not found.
+func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID string) (string, string, string) {
 	convs, err := c.api.GetConversations(ctx, gm.WithLimit(50))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for _, conv := range convs.Conversations {
 		members, err := c.api.GetConversationMembers(ctx, conv.ConversationID)
@@ -728,11 +754,11 @@ func (c *GarminClient) lookupPhoneFromUUID(ctx context.Context, hermesUUID strin
 				continue
 			}
 			if gm.PhoneToHermesUserID(addr) == strings.ToLower(hermesUUID) {
-				return addr, derefStr(m.FriendlyName)
+				return addr, derefStr(m.FriendlyName), derefStr(m.ImageUrl)
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // buildGroupName builds a display name for a group conversation.
