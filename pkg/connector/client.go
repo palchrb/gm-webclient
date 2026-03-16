@@ -612,7 +612,7 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 	convIDStr := upd.MessageID.ConversationID.String()
 	msgIDStr := upd.MessageID.MessageID.String()
 
-	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Receipt{
+	evt := &simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type: evtType,
 			PortalKey: networkid.PortalKey{
@@ -621,7 +621,15 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 			},
 		},
 		LastTarget: networkid.MessageID(msgIDStr),
-	})
+	}
+	// Use the Garmin UserID from the status update as the ghost sender so the
+	// receipt shows with the contact's avatar rather than the bridge bot.
+	if upd.UserID != nil {
+		evt.Sender = bridgev2.EventSender{
+			Sender: ghostIDFromHermesID(upd.UserID.String()),
+		}
+	}
+	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, evt)
 }
 
 // ─── IdentifierResolvingNetworkAPI ───────────────────────────────────────────
@@ -647,13 +655,27 @@ func (c *GarminClient) resolvePhone(ctx context.Context, identifier string, crea
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
+
+	// Collect all matching conversations, preferring DMs (2 members) over groups.
+	type match struct {
+		convID    string
+		memberID  string
+		memberCount int
+	}
+	var best *match
 	for _, conv := range convs.Conversations {
 		for _, memberUUID := range conv.MemberIDs {
 			if strings.ToLower(memberUUID) != targetUUID {
 				continue
 			}
-			return c.resolveExistingConv(ctx, conv.ConversationID.String(), ghostIDFromHermesID(memberUUID))
+			m := match{conv.ConversationID.String(), memberUUID, len(conv.MemberIDs)}
+			if best == nil || m.memberCount < best.memberCount {
+				best = &m
+			}
 		}
+	}
+	if best != nil {
+		return c.resolveExistingConv(ctx, best.convID, ghostIDFromHermesID(best.memberID))
 	}
 
 	if !createChat {
