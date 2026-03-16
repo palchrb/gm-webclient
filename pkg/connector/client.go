@@ -656,26 +656,19 @@ func (c *GarminClient) resolvePhone(ctx context.Context, identifier string, crea
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
 
-	// Collect all matching conversations, preferring DMs (2 members) over groups.
-	type match struct {
-		convID    string
-		memberID  string
-		memberCount int
-	}
-	var best *match
+	// Only match a 1-on-1 DM (exactly 2 members: the user and the contact).
+	// If the contact only appears in group conversations, fall through and
+	// create a new synthetic DM portal below.
 	for _, conv := range convs.Conversations {
+		if len(conv.MemberIDs) != 2 {
+			continue
+		}
 		for _, memberUUID := range conv.MemberIDs {
 			if strings.ToLower(memberUUID) != targetUUID {
 				continue
 			}
-			m := match{conv.ConversationID.String(), memberUUID, len(conv.MemberIDs)}
-			if best == nil || m.memberCount < best.memberCount {
-				best = &m
-			}
+			return c.resolveExistingConv(ctx, conv.ConversationID.String(), ghostIDFromHermesID(memberUUID))
 		}
-	}
-	if best != nil {
-		return c.resolveExistingConv(ctx, best.convID, ghostIDFromHermesID(best.memberID))
 	}
 
 	if !createChat {
