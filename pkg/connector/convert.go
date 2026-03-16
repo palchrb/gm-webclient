@@ -159,6 +159,11 @@ func (c *GarminClient) bridgeIncomingMedia(
 	mediaID := *msg.MediaID
 	mediaType := *msg.MediaType
 
+	// Transcription only applies to audio; clear it for other media types.
+	if mediaType != gm.MediaTypeAudioOgg {
+		transcription = nil
+	}
+
 	// Download from Garmin using the REST API.
 	data, err := c.api.DownloadMedia(
 		ctx,
