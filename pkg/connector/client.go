@@ -190,7 +190,11 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 	// Synthetic portals created for new conversations before the first message is sent.
 	if strings.HasPrefix(string(portal.ID), "phone:") {
 		phone := strings.TrimPrefix(string(portal.ID), "phone:")
-		return c.chatInfoForPhone(phone), nil
+		return c.chatInfoForRecipient(phone), nil
+	}
+	if strings.HasPrefix(string(portal.ID), "email:") {
+		email := strings.TrimPrefix(string(portal.ID), "email:")
+		return c.chatInfoForRecipient(email), nil
 	}
 
 	convID, err := uuid.Parse(string(portal.ID))
@@ -270,11 +274,12 @@ func (c *GarminClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 	return info, nil
 }
 
-// chatInfoForPhone builds a ChatInfo for a new conversation with a single recipient.
-// Used for synthetic "phone:+E164" portals created by ResolveIdentifier when no
-// existing conversation exists yet.
-func (c *GarminClient) chatInfoForPhone(phone string) *bridgev2.ChatInfo {
-	hermesID := gm.PhoneToHermesUserID(phone)
+// chatInfoForRecipient builds a ChatInfo for a new conversation with a single
+// recipient identified by phone number or email address.
+// Used for synthetic "phone:+E164" and "email:addr" portals created by
+// ResolveIdentifier when no existing conversation exists yet.
+func (c *GarminClient) chatInfoForRecipient(recipient string) *bridgev2.ChatInfo {
+	recipientGhostID := ghostIDForRecipient(recipient)
 	chatMembers := []bridgev2.ChatMember{
 		{
 			EventSender: bridgev2.EventSender{
@@ -286,14 +291,18 @@ func (c *GarminClient) chatInfoForPhone(phone string) *bridgev2.ChatInfo {
 		},
 		{
 			EventSender: bridgev2.EventSender{
-				Sender: ghostIDFromHermesID(hermesID),
+				Sender: recipientGhostID,
 			},
 			Membership: event.MembershipJoin,
 			PowerLevel: ptrInt(50),
 		},
 	}
-	recipientPhones := []string{phone}
+	recipients := []string{recipient}
+	// Set the room name to the recipient address so the Matrix room is named
+	// after the phone number or email rather than the raw ghost UUID.
+	name := recipient
 	return &bridgev2.ChatInfo{
+		Name: &name,
 		Members: &bridgev2.ChatMemberList{
 			IsFull:  true,
 			Members: chatMembers,
@@ -304,8 +313,8 @@ func (c *GarminClient) chatInfoForPhone(phone string) *bridgev2.ChatInfo {
 				meta = &PortalMetadata{}
 				portal.Metadata = meta
 			}
-			if !slicesEqual(meta.RecipientPhones, recipientPhones) {
-				meta.RecipientPhones = recipientPhones
+			if !slicesEqual(meta.RecipientPhones, recipients) {
+				meta.RecipientPhones = recipients
 				return true
 			}
 			return false
@@ -313,28 +322,43 @@ func (c *GarminClient) chatInfoForPhone(phone string) *bridgev2.ChatInfo {
 	}
 }
 
+// ghostIDForRecipient returns a stable ghost UserID for a phone number or email.
+// For phone numbers (start with +), derives the Hermes UUID via PhoneToHermesUserID.
+// For email addresses, uses the address directly as the ID.
+func ghostIDForRecipient(recipient string) networkid.UserID {
+	if strings.HasPrefix(recipient, "+") {
+		return ghostIDFromHermesID(gm.PhoneToHermesUserID(recipient))
+	}
+	// Email or other address: use as-is (lowercased for consistency).
+	return networkid.UserID(strings.ToLower(recipient))
+}
+
 // GetUserInfo returns ghost profile data (displayname, identifiers).
 // The ghost ID is the Hermes UUID, but we want to show a human-friendly name.
 func (c *GarminClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	// ghost.ID is the Hermes UUID. We don't have a reverse-lookup from UUID
-	// to phone without a conversation context, so we use the UUID as the name
-	// unless we can find it in a conversation's member list.
-	//
-	// Attempt a lookup by checking active conversations (best-effort).
-	if phone, name := c.lookupPhoneFromUUID(ctx, string(ghost.ID)); phone != "" {
-		identifers := []string{"tel:" + phone}
+	id := string(ghost.ID)
+
+	// Email-based ghost IDs (from email: portals) — use the address as display name.
+	if strings.Contains(id, "@") {
+		return &bridgev2.UserInfo{
+			Identifiers: []string{"mailto:" + id},
+			Name:        ptrStr(id),
+		}, nil
+	}
+
+	// Regular Hermes UUID: try to resolve to a phone number via conversation members.
+	if phone, name := c.lookupPhoneFromUUID(ctx, id); phone != "" {
 		displayName := name
 		if displayName == "" {
 			displayName = phone
 		}
 		return &bridgev2.UserInfo{
-			Identifiers: identifers,
+			Identifiers: []string{"tel:" + phone},
 			Name:        ptrStr(displayName),
 		}, nil
 	}
 
 	// Fallback: use the Hermes UUID itself as the display name.
-	id := string(ghost.ID)
 	return &bridgev2.UserInfo{
 		Name: ptrStr(id),
 	}, nil
@@ -374,11 +398,11 @@ func (c *GarminClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		return nil, fmt.Errorf("send to garmin: %w", err)
 	}
 
-	// When sending the first message to a synthetic "phone:+E164" portal, the
-	// Garmin API creates a new conversation and returns its UUID. Store the
-	// mapping so incoming SignalR messages for that conversation are routed to
+	// When sending the first message to a synthetic "phone:+E164" or "email:addr"
+	// portal, the Garmin API creates a new conversation and returns its UUID. Store
+	// the mapping so incoming SignalR messages for that conversation are routed to
 	// this portal instead of creating a new one with the real UUID.
-	if strings.HasPrefix(string(msg.Portal.ID), "phone:") {
+	if strings.HasPrefix(string(msg.Portal.ID), "phone:") || strings.HasPrefix(string(msg.Portal.ID), "email:") {
 		pendingKey := networkid.PortalKey{
 			ID:       msg.Portal.ID,
 			Receiver: c.userLogin.ID,
@@ -570,50 +594,32 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 // ─── IdentifierResolvingNetworkAPI ───────────────────────────────────────────
 
 // ResolveIdentifier searches existing conversations for a member matching
-// the given phone number. When createChat is true and no existing conversation
-// is found, returns a synthetic portal so the user can send the first message
-// (which will create the Garmin conversation on the server side).
+// the given phone number or email address. When createChat is true and no
+// existing conversation is found, returns a synthetic portal so the user can
+// send the first message (which will create the Garmin conversation).
 func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+	isEmail := strings.Contains(identifier, "@")
+
+	if isEmail {
+		return c.resolveEmail(ctx, identifier, createChat)
+	}
+	return c.resolvePhone(ctx, identifier, createChat)
+}
+
+func (c *GarminClient) resolvePhone(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+	phone := "+" + normalizePhone(identifier)
+	targetUUID := gm.PhoneToHermesUserID(phone)
+
 	convs, err := c.api.GetConversations(ctx, gm.WithLimit(500))
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
-
-	normalized := normalizePhone(identifier)
-	phone := "+" + normalized
-	targetUUID := gm.PhoneToHermesUserID(phone)
-
 	for _, conv := range convs.Conversations {
 		for _, memberUUID := range conv.MemberIDs {
 			if strings.ToLower(memberUUID) != targetUUID {
 				continue
 			}
-			// Found a matching conversation.
-			convIDStr := conv.ConversationID.String()
-			portalKey := networkid.PortalKey{
-				ID:       portalIDFromConversation(convIDStr),
-				Receiver: c.userLogin.ID,
-			}
-			ghost, err := c.userLogin.Bridge.GetGhostByID(ctx, ghostIDFromHermesID(memberUUID))
-			if err != nil {
-				return nil, fmt.Errorf("get ghost: %w", err)
-			}
-			portal, err := c.userLogin.Bridge.GetPortalByKey(ctx, portalKey)
-			if err != nil {
-				return nil, fmt.Errorf("get portal: %w", err)
-			}
-			ghostInfo, _ := c.GetUserInfo(ctx, ghost)
-			portalInfo, _ := c.GetChatInfo(ctx, portal)
-			return &bridgev2.ResolveIdentifierResponse{
-				Ghost:    ghost,
-				UserID:   ghostIDFromHermesID(memberUUID),
-				UserInfo: ghostInfo,
-				Chat: &bridgev2.CreateChatResponse{
-					Portal:     portal,
-					PortalKey:  portalKey,
-					PortalInfo: portalInfo,
-				},
-			}, nil
+			return c.resolveExistingConv(ctx, conv.ConversationID.String(), ghostIDFromHermesID(memberUUID))
 		}
 	}
 
@@ -621,17 +627,58 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 		return nil, fmt.Errorf("no Garmin Messenger conversation found with %s", identifier)
 	}
 
-	// No existing conversation — create a synthetic portal so the user can
-	// send the first message. Sending the message will create the Garmin
-	// conversation on the server and record the real ConversationID so that
-	// incoming replies are routed back to this same portal.
-	c.log.Info().Str("phone", phone).Msg("No existing conversation found; creating synthetic portal for new chat")
-	pendingID := networkid.PortalID("phone:" + phone)
-	pendingKey := networkid.PortalKey{
-		ID:       pendingID,
+	c.log.Info().Str("phone", phone).Msg("No existing conversation; creating synthetic portal for new chat")
+	ghostID := ghostIDForRecipient(phone)
+	return c.resolveNewChat(ctx, "phone:"+phone, ghostID, phone)
+}
+
+func (c *GarminClient) resolveEmail(ctx context.Context, email string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	if !createChat {
+		return nil, fmt.Errorf("no Garmin Messenger conversation found with %s", email)
+	}
+
+	c.log.Info().Str("email", email).Msg("No existing conversation; creating synthetic portal for email chat")
+	ghostID := ghostIDForRecipient(email)
+	return c.resolveNewChat(ctx, "email:"+email, ghostID, email)
+}
+
+// resolveExistingConv builds a ResolveIdentifierResponse for a known conversation UUID.
+func (c *GarminClient) resolveExistingConv(ctx context.Context, convIDStr string, ghostUserID networkid.UserID) (*bridgev2.ResolveIdentifierResponse, error) {
+	portalKey := networkid.PortalKey{
+		ID:       portalIDFromConversation(convIDStr),
 		Receiver: c.userLogin.ID,
 	}
-	ghost, err := c.userLogin.Bridge.GetGhostByID(ctx, ghostIDFromHermesID(targetUUID))
+	ghost, err := c.userLogin.Bridge.GetGhostByID(ctx, ghostUserID)
+	if err != nil {
+		return nil, fmt.Errorf("get ghost: %w", err)
+	}
+	portal, err := c.userLogin.Bridge.GetPortalByKey(ctx, portalKey)
+	if err != nil {
+		return nil, fmt.Errorf("get portal: %w", err)
+	}
+	ghostInfo, _ := c.GetUserInfo(ctx, ghost)
+	portalInfo, _ := c.GetChatInfo(ctx, portal)
+	return &bridgev2.ResolveIdentifierResponse{
+		Ghost:    ghost,
+		UserID:   ghostUserID,
+		UserInfo: ghostInfo,
+		Chat: &bridgev2.CreateChatResponse{
+			Portal:     portal,
+			PortalKey:  portalKey,
+			PortalInfo: portalInfo,
+		},
+	}, nil
+}
+
+// resolveNewChat builds a ResolveIdentifierResponse for a brand-new synthetic portal.
+func (c *GarminClient) resolveNewChat(ctx context.Context, portalIDStr string, ghostUserID networkid.UserID, recipient string) (*bridgev2.ResolveIdentifierResponse, error) {
+	pendingKey := networkid.PortalKey{
+		ID:       networkid.PortalID(portalIDStr),
+		Receiver: c.userLogin.ID,
+	}
+	ghost, err := c.userLogin.Bridge.GetGhostByID(ctx, ghostUserID)
 	if err != nil {
 		return nil, fmt.Errorf("get ghost: %w", err)
 	}
@@ -639,11 +686,19 @@ func (c *GarminClient) ResolveIdentifier(ctx context.Context, identifier string,
 	if err != nil {
 		return nil, fmt.Errorf("get portal: %w", err)
 	}
-	ghostInfo, _ := c.GetUserInfo(ctx, ghost)
-	portalInfo := c.chatInfoForPhone(phone)
+	// Use the recipient address as the ghost display name directly.
+	// GetUserInfo would fall back to the raw UUID for new ghosts with no
+	// existing conversation, which makes the DM room and ghost unrecognizable.
+	ghostInfo := &bridgev2.UserInfo{Name: ptrStr(recipient)}
+	if strings.HasPrefix(recipient, "+") {
+		ghostInfo.Identifiers = []string{"tel:" + recipient}
+	} else if strings.Contains(recipient, "@") {
+		ghostInfo.Identifiers = []string{"mailto:" + recipient}
+	}
+	portalInfo := c.chatInfoForRecipient(recipient)
 	return &bridgev2.ResolveIdentifierResponse{
 		Ghost:    ghost,
-		UserID:   ghostIDFromHermesID(targetUUID),
+		UserID:   ghostUserID,
 		UserInfo: ghostInfo,
 		Chat: &bridgev2.CreateChatResponse{
 			Portal:     portal,
