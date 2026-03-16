@@ -188,6 +188,12 @@ type MessageModel struct {
 	OtaUuid          *uuid.UUID         `json:"otaUuid,omitempty"`
 	FromUnitID       *string            `json:"fromUnitId,omitempty"`
 	IntendedUnitID   *string            `json:"intendedUnitId,omitempty"`
+	FromDeviceIdentifier *string        `json:"fromDeviceIdentifier,omitempty"`
+	FromImei         *string            `json:"fromImei,omitempty"`
+	FromInstanceID   *string            `json:"fromInstanceId,omitempty"`
+	IntendedImei     *string            `json:"intendedImei,omitempty"`
+	SentVia          *string            `json:"sentVia,omitempty"`
+	OriginalMtMessageProperties *json.RawMessage `json:"originalMtMessageProperties,omitempty"`
 
 	// UnknownFields captures any JSON fields not handled by this struct.
 	// Used for diagnostics — helps discover new protocol fields.
@@ -205,6 +211,8 @@ var knownMessageModelFields = map[string]bool{
 	"mediaId": true, "mediaType": true, "mediaMetadata": true, "uuid": true,
 	"transcription": true, "otaUuid": true, "fromUnitId": true,
 	"intendedUnitId": true,
+	"fromDeviceIdentifier": true, "fromImei": true, "fromInstanceId": true,
+	"intendedImei": true, "sentVia": true, "originalMtMessageProperties": true,
 	// Alias variants handled in UnmarshalJSON
 	"messageGuid": true, "conversationGuid": true, "parentMessageGuid": true,
 }
@@ -546,11 +554,15 @@ type MessageStatusUpdate struct {
 	DeviceInstanceID *uuid.UUID              `json:"deviceInstanceId,omitempty"`
 	DeviceType       *DeviceType             `json:"deviceType,omitempty"`
 	MessageStatus    *MessageStatus          `json:"messageStatus,omitempty"`
-	UpdatedAt        *time.Time              `json:"updatedAt,omitempty"`
+	// UpdatedAt is omitted from the embedded Alias to avoid a parse error
+	// when Garmin sends the Go zero time "0001-01-01T00:00:00" (no timezone).
+	// It is parsed manually in UnmarshalJSON below.
+	UpdatedAt        *time.Time              `json:"-"`
 }
 
 // UnmarshalJSON handles both "status" and "messageStatus" keys,
 // preferring "messageStatus" when both are present.
+// It also tolerates a zero/invalid updatedAt timestamp from Garmin.
 func (m *MessageStatusUpdate) UnmarshalJSON(data []byte) error {
 	type Alias MessageStatusUpdate
 	var alias Alias
@@ -559,16 +571,31 @@ func (m *MessageStatusUpdate) UnmarshalJSON(data []byte) error {
 	}
 	*m = MessageStatusUpdate(alias)
 
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
 	// If messageStatus is nil, check for "status" key
 	if m.MessageStatus == nil {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return err
-		}
 		if statusVal, ok := raw["status"]; ok {
 			var status MessageStatus
 			if err := json.Unmarshal(statusVal, &status); err == nil {
 				m.MessageStatus = &status
+			}
+		}
+	}
+
+	// Parse updatedAt tolerantly — Garmin sometimes sends "0001-01-01T00:00:00"
+	// (zero time, no timezone) which fails standard RFC3339 parsing.
+	if updatedAtRaw, ok := raw["updatedAt"]; ok {
+		var s string
+		if err := json.Unmarshal(updatedAtRaw, &s); err == nil && s != "" {
+			for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05"} {
+				if t, err := time.Parse(layout, s); err == nil && t.Year() > 1 {
+					m.UpdatedAt = &t
+					break
+				}
 			}
 		}
 	}

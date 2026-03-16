@@ -612,7 +612,7 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 	convIDStr := upd.MessageID.ConversationID.String()
 	msgIDStr := upd.MessageID.MessageID.String()
 
-	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Receipt{
+	evt := &simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type: evtType,
 			PortalKey: networkid.PortalKey{
@@ -621,7 +621,15 @@ func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 			},
 		},
 		LastTarget: networkid.MessageID(msgIDStr),
-	})
+	}
+	// Use the Garmin UserID from the status update as the ghost sender so the
+	// receipt shows with the contact's avatar rather than the bridge bot.
+	if upd.UserID != nil {
+		evt.Sender = bridgev2.EventSender{
+			Sender: ghostIDFromHermesID(upd.UserID.String()),
+		}
+	}
+	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, evt)
 }
 
 // ─── IdentifierResolvingNetworkAPI ───────────────────────────────────────────
@@ -647,7 +655,14 @@ func (c *GarminClient) resolvePhone(ctx context.Context, identifier string, crea
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
+
+	// Only match a 1-on-1 DM (exactly 2 members: the user and the contact).
+	// If the contact only appears in group conversations, fall through and
+	// create a new synthetic DM portal below.
 	for _, conv := range convs.Conversations {
+		if len(conv.MemberIDs) != 2 {
+			continue
+		}
 		for _, memberUUID := range conv.MemberIDs {
 			if strings.ToLower(memberUUID) != targetUUID {
 				continue
