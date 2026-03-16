@@ -592,6 +592,23 @@ func (c *GarminClient) HandleMatrixReactionRemove(_ context.Context, _ *bridgev2
 	return nil
 }
 
+// HandleMatrixReadReceipt forwards a Matrix read receipt to Garmin via SignalR MarkAsRead.
+func (c *GarminClient) HandleMatrixReadReceipt(_ context.Context, msg *bridgev2.MatrixReadReceipt) error {
+	if msg.ExactMessage == nil {
+		return nil
+	}
+	conversationID, err := uuid.Parse(string(msg.Portal.ID))
+	if err != nil {
+		return fmt.Errorf("parse conversation ID: %w", err)
+	}
+	messageID, err := uuid.Parse(string(msg.ExactMessage.ID))
+	if err != nil {
+		return fmt.Errorf("parse message ID: %w", err)
+	}
+	c.sr.MarkAsRead(conversationID, messageID)
+	return nil
+}
+
 // handleStatusUpdate is the sr.OnStatusUpdate callback.
 func (c *GarminClient) handleStatusUpdate(upd gm.MessageStatusUpdate) {
 	if upd.MessageStatus == nil {
