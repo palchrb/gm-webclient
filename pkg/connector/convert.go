@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -266,6 +267,64 @@ func (c *GarminClient) resolveMediaMessageDetails(ctx context.Context, msg gm.Me
 		Str("conversation_id", msg.ConversationID.String()).
 		Msg("Media message UUID not present in detail response, falling back to MessageID")
 	return msg.MessageID, nil, nil
+}
+
+// isReactionBody reports whether a Garmin message body is a reaction.
+// Garmin encodes reactions as: \u200b{emoji}\u200b to \u200a{quoted}\u200a
+func isReactionBody(s string) bool {
+	return strings.HasPrefix(s, "\u200b")
+}
+
+// extractReactionEmoji returns the emoji from a Garmin reaction body.
+func extractReactionEmoji(s string) string {
+	s = strings.TrimPrefix(s, "\u200b")
+	if idx := strings.Index(s, "\u200b"); idx >= 0 {
+		return s[:idx]
+	}
+	return s
+}
+
+// buildReactionBody constructs a Garmin-compatible reaction message body.
+// Format mirrors what the native app sends: \u200b{emoji}\u200b to \u200a{original}\u200a
+func buildReactionBody(emoji, originalBody string) string {
+	return "\u200b" + emoji + "\u200b to \u200a" + originalBody + "\u200a"
+}
+
+// resolveReactionParentID fetches the parentMessageId for a reaction message via REST.
+// SignalR pushes never include parentMessageId; the server populates it based on the
+// quoted body text, and it's only available in the conversation detail response.
+func (c *GarminClient) resolveReactionParentID(ctx context.Context, msg gm.MessageModel) (networkid.MessageID, error) {
+	if msg.ParentMessageID != nil {
+		return networkid.MessageID(msg.ParentMessageID.String()), nil
+	}
+	detail, err := c.api.GetConversationDetail(ctx, msg.ConversationID, gm.WithDetailLimit(100))
+	if err != nil {
+		return "", fmt.Errorf("reaction parent lookup failed: %w", err)
+	}
+	for _, m := range detail.Messages {
+		if m.MessageID == msg.MessageID {
+			if m.ParentMessageID != nil {
+				return networkid.MessageID(m.ParentMessageID.String()), nil
+			}
+			break
+		}
+	}
+	return "", fmt.Errorf("parentMessageId not found for reaction %s", msg.MessageID)
+}
+
+// resolveReactionOriginalBody fetches the message body of the target message for
+// use when constructing an outgoing reaction from Matrix to Garmin.
+func (c *GarminClient) resolveReactionOriginalBody(ctx context.Context, conversationID uuid.UUID, targetMsgID uuid.UUID) (string, error) {
+	detail, err := c.api.GetConversationDetail(ctx, conversationID, gm.WithDetailLimit(100))
+	if err != nil {
+		return "", fmt.Errorf("reaction target lookup failed: %w", err)
+	}
+	for _, m := range detail.Messages {
+		if m.MessageID == targetMsgID {
+			return derefStr(m.MessageBody), nil
+		}
+	}
+	return "", fmt.Errorf("target message %s not found in conversation", targetMsgID)
 }
 
 // derefFloat64 safely dereferences a *float64.
