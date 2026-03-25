@@ -533,6 +533,13 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 		}
 	}
 
+	// Garmin encodes reactions as \u200b{emoji}\u200b to \u200a{quoted}\u200a.
+	// parentMessageId is never set in the SignalR push; fetch it from REST.
+	if isReactionBody(derefStr(msg.MessageBody)) {
+		go c.handleIncomingReaction(msg, portalID, senderUUID)
+		return
+	}
+
 	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Message[gm.MessageModel]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
@@ -564,6 +571,41 @@ func (c *GarminClient) handleIncomingMessage(msg gm.MessageModel) {
 	c.sr.MarkAsDelivered(msg.ConversationID, msg.MessageID)
 }
 
+// handleIncomingReaction resolves the parentMessageId via REST and queues a
+// RemoteEventReaction. Called in a goroutine from handleIncomingMessage.
+func (c *GarminClient) handleIncomingReaction(msg gm.MessageModel, portalID networkid.PortalID, senderUUID string) {
+	ctx := context.Background()
+	emoji := extractReactionEmoji(derefStr(msg.MessageBody))
+	parentID, err := c.resolveReactionParentID(ctx, msg)
+	if err != nil {
+		c.log.Warn().Err(err).
+			Str("msg_id", msg.MessageID.String()).
+			Msg("Could not resolve reaction parent — dropping")
+		return
+	}
+	c.userLogin.Bridge.QueueRemoteEvent(c.userLogin, &simplevent.Reaction{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventReaction,
+			LogContext: func(ctx zerolog.Context) zerolog.Context {
+				return ctx.
+					Str("garmin_msg_id", msg.MessageID.String()).
+					Str("parent_msg_id", string(parentID)).
+					Str("emoji", emoji)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       portalID,
+				Receiver: c.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				Sender: networkid.UserID(senderUUID),
+			},
+			Timestamp: derefTime(msg.SentAt),
+		},
+		TargetMessage: parentID,
+		Emoji:         emoji,
+	})
+}
+
 // PreHandleMatrixReaction is called first to identify the reaction for deduplication.
 func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
 	return bridgev2.MatrixReactionPreResponse{
@@ -573,14 +615,30 @@ func (c *GarminClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.
 	}, nil
 }
 
-// HandleMatrixReaction sends a Matrix reaction to Garmin as a plain text message.
-// The emoji is sent as the message body; Garmin does not have a native reaction API.
+// HandleMatrixReaction sends a Matrix reaction to Garmin using the same ZWS-encoded
+// body format the native app uses: \u200b{emoji}\u200b to \u200a{original}\u200a
+// The server matches the quoted text to a message in the conversation to resolve
+// parentMessageId — same heuristic (most recent match) as the native app.
 func (c *GarminClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
 	meta, ok := msg.Portal.Metadata.(*PortalMetadata)
 	if !ok || len(meta.RecipientPhones) == 0 {
 		return nil, fmt.Errorf("portal has no recipient phone numbers — cannot send reaction")
 	}
-	if _, err := c.api.SendMessage(ctx, meta.RecipientPhones, msg.Content.RelatesTo.Key); err != nil {
+	conversationID, err := uuid.Parse(string(msg.Portal.ID))
+	if err != nil {
+		return nil, fmt.Errorf("parse conversation ID: %w", err)
+	}
+	targetMsgID, err := uuid.Parse(string(msg.TargetMessage.ID))
+	if err != nil {
+		return nil, fmt.Errorf("parse target message ID: %w", err)
+	}
+	originalBody, err := c.resolveReactionOriginalBody(ctx, conversationID, targetMsgID)
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Could not resolve reaction target body — sending emoji only")
+		originalBody = msg.Content.RelatesTo.Key
+	}
+	body := buildReactionBody(msg.Content.RelatesTo.Key, originalBody)
+	if _, err := c.api.SendMessage(ctx, meta.RecipientPhones, body); err != nil {
 		return nil, fmt.Errorf("send reaction to Garmin: %w", err)
 	}
 	return &database.Reaction{}, nil
