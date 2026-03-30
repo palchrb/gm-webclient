@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/google/uuid"
@@ -35,21 +36,37 @@ func (c *GarminClient) convertMessage(
 	}, body)
 
 	bodyText := body
+	bodyHTML := ""
+	hasLocation := false
 	if msg.UserLocation != nil {
 		lat := derefFloat64(msg.UserLocation.LatitudeDegrees)
 		lon := derefFloat64(msg.UserLocation.LongitudeDegrees)
-		if bodyText == "" {
-			// Keep this as plain text to avoid large map previews in Matrix clients.
-			bodyText = fmt.Sprintf("📍 %.6f, %.6f", lat, lon)
-		} else {
-			bodyText += fmt.Sprintf("\n\n📍 Location: %.6f, %.6f", lat, lon)
-		}
-		if alt := derefFloat64(msg.UserLocation.ElevationMeters); alt != 0 {
-			bodyText += fmt.Sprintf(" (%.0fm)", alt)
-		}
-		// GroundVelocityMetersPerSecond * 3.6 = km/h
-		if spd := derefFloat64(msg.UserLocation.GroundVelocityMetersPerSecond); spd != 0 {
-			bodyText += fmt.Sprintf(", %.1f km/h", spd*3.6)
+		if lat != 0 || lon != 0 {
+			hasLocation = true
+			osmURL := fmt.Sprintf(
+				"https://www.openstreetmap.org/?mlat=%.6f&mlon=%.6f#map=14/%.6f/%.6f&layers=P",
+				lat, lon, lat, lon,
+			)
+
+			// Build location suffix parts (altitude, speed)
+			locSuffix := ""
+			if alt := derefFloat64(msg.UserLocation.ElevationMeters); alt != 0 {
+				locSuffix += fmt.Sprintf(" (%.0fm)", alt)
+			}
+			if spd := derefFloat64(msg.UserLocation.GroundVelocityMetersPerSecond); spd != 0 {
+				locSuffix += fmt.Sprintf(", %.1f km/h", spd*3.6)
+			}
+
+			locPlain := fmt.Sprintf("Loc:📍%s\n%s", locSuffix, osmURL)
+			locHTML := fmt.Sprintf("Loc:<a href=\"%s\">📍</a>%s", osmURL, locSuffix)
+
+			if bodyText == "" {
+				bodyText = locPlain
+				bodyHTML = locHTML
+			} else {
+				bodyHTML = html.EscapeString(bodyText) + "<br><br>" + locHTML
+				bodyText += "\n\n" + locPlain
+			}
 		}
 	}
 
@@ -68,12 +85,18 @@ func (c *GarminClient) convertMessage(
 			}
 			c.log.Warn().Err(err).Str("msg_id", msg.MessageID.String()).Msg("Failed to bridge media")
 			if bodyText != "" {
+				mediaErrSuffix := fmt.Sprintf("\n\n[Media attachment (%s) — could not be downloaded]", mediaTypeStr)
+				content := &event.MessageEventContent{
+					MsgType: event.MsgText,
+					Body:    bodyText + mediaErrSuffix,
+				}
+				if hasLocation {
+					content.Format = event.FormatHTML
+					content.FormattedBody = bodyHTML + "<br><br>" + fmt.Sprintf("[Media attachment (%s) — could not be downloaded]", mediaTypeStr)
+				}
 				parts = append(parts, &bridgev2.ConvertedMessagePart{
-					Type: event.EventMessage,
-					Content: &event.MessageEventContent{
-						MsgType: event.MsgText,
-						Body:    bodyText + fmt.Sprintf("\n\n[Media attachment (%s) — could not be downloaded]", mediaTypeStr),
-					},
+					Type:    event.EventMessage,
+					Content: content,
 				})
 			} else {
 				parts = append(parts, &bridgev2.ConvertedMessagePart{
@@ -104,6 +127,10 @@ func (c *GarminClient) convertMessage(
 				// Save the filename before overwriting body with the caption/transcription.
 				mediaPart.Content.FileName = mediaPart.Content.Body
 				mediaPart.Content.Body = bodyText
+				if hasLocation {
+					mediaPart.Content.Format = event.FormatHTML
+					mediaPart.Content.FormattedBody = bodyHTML
+				}
 			}
 			parts = append(parts, mediaPart)
 		}
@@ -111,12 +138,17 @@ func (c *GarminClient) convertMessage(
 
 	// --- Text fallback when there's no media attachment ---
 	if len(parts) == 0 && bodyText != "" {
+		content := &event.MessageEventContent{
+			MsgType: event.MsgText,
+			Body:    bodyText,
+		}
+		if hasLocation {
+			content.Format = event.FormatHTML
+			content.FormattedBody = bodyHTML
+		}
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			Type: event.EventMessage,
-			Content: &event.MessageEventContent{
-				MsgType: event.MsgText,
-				Body:    bodyText,
-			},
+			Type:    event.EventMessage,
+			Content: content,
 		})
 	}
 
