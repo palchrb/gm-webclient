@@ -124,7 +124,7 @@ async function loadConversations() {
     // Show cached data immediately (avoids blank screen + reduces API calls).
     // Cache is long-lived (24h) — real-time updates come via SSE/SignalR,
     // and we do one background refresh per page load to catch anything missed.
-    const cached = cache.get('conversations', 24 * 60 * 60 * 1000); // 24h
+    const cached = cache.get('conversations'); // no TTL — show cached instantly, always refresh below
     const cachedMembers = cache.get('members');
     const cachedNames = cache.get('memberNames');
 
@@ -190,7 +190,7 @@ async function selectConversation(convId) {
     document.getElementById('sidebar').classList.remove('open');
 
     // Show cached messages immediately, then refresh from API
-    const cachedMsgs = cache.get('msgs_' + convId, 60 * 60 * 1000); // 1h, SSE keeps it fresh
+    const cachedMsgs = cache.get('msgs_' + convId); // no TTL — show cached instantly, always refresh below
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
