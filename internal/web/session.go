@@ -18,38 +18,52 @@ import (
 
 const (
 	sessionCookieName = "garmin_session"
-	sessionMaxIdle    = 30 * time.Minute
-	reaperInterval    = 5 * time.Minute
+	signalRIdleTimeout = 2 * time.Minute // pause SignalR when no browser is listening
+	reaperInterval     = 30 * time.Second
+	defaultSessionDays = 30
 
-	// FCM reconnect backoff parameters
 	fcmInitialBackoff = 5 * time.Second
 	fcmMaxBackoff     = 5 * time.Minute
-
-	// Default session/cookie TTL
-	defaultSessionDays = 30
 )
 
 type contextKey string
 
 const sessionContextKey contextKey = "session"
 
-// UserSession represents a logged-in user's session.
-type UserSession struct {
-	ID                string
-	Phone             string
-	Auth              *gm.HermesAuth
-	API               *gm.HermesAPI
-	SignalR           *gm.HermesSignalR
-	FCM               *fcm.Client
-	SSE               *SSEBroker
+// ---------------------------------------------------------------------------
+// UserAccount — one per phone number, shared across all browser sessions
+// ---------------------------------------------------------------------------
+
+// UserAccount holds Garmin connectivity shared across all browser sessions
+// for the same phone number. One SignalR + one FCM connection per account.
+type UserAccount struct {
+	Phone   string
+	Auth    *gm.HermesAuth
+	API     *gm.HermesAPI
+	SignalR *gm.HermesSignalR
+	FCM     *fcm.Client
+	SSE     *SSEBroker // shared: all sessions for this phone receive events
+
 	PushSubscriptions map[string]*webpush.Subscription
-	LastActivity      time.Time
-	mu                sync.Mutex
 	pushMu            sync.RWMutex
-	signalRCancel     context.CancelFunc // controls SignalR lifecycle (paused when idle)
-	fcmCancel         context.CancelFunc // controls FCM lifecycle (runs until session expires)
-	signalRStarted    bool
-	fcmStarted        bool
+
+	mu             sync.Mutex
+	signalRCancel  context.CancelFunc
+	fcmCancel      context.CancelFunc
+	signalRStarted bool
+	fcmStarted     bool
+}
+
+// ---------------------------------------------------------------------------
+// UserSession — one per browser cookie, lightweight
+// ---------------------------------------------------------------------------
+
+// UserSession is a browser login. Multiple sessions can share one UserAccount.
+type UserSession struct {
+	ID           string
+	Account      *UserAccount
+	LastActivity time.Time
+	mu           sync.Mutex
 }
 
 // Touch updates the last activity time.
@@ -59,6 +73,12 @@ func (s *UserSession) Touch() {
 	s.mu.Unlock()
 }
 
+// Convenience accessors so the rest of the codebase doesn't change much.
+func (s *UserSession) Phone() string            { return s.Account.Phone }
+func (s *UserSession) AuthObj() *gm.HermesAuth  { return s.Account.Auth }
+func (s *UserSession) APIObj() *gm.HermesAPI    { return s.Account.API }
+func (s *UserSession) SSEBroker() *SSEBroker    { return s.Account.SSE }
+
 // PendingOTP represents a pending OTP request before a session is created.
 type PendingOTP struct {
 	OtpReq    *gm.OtpRequest
@@ -66,22 +86,27 @@ type PendingOTP struct {
 	CreatedAt time.Time
 }
 
-// SessionManager manages user sessions.
+// ---------------------------------------------------------------------------
+// SessionManager
+// ---------------------------------------------------------------------------
+
+// SessionManager manages accounts (per phone) and sessions (per browser).
 type SessionManager struct {
-	sessions    map[string]*UserSession
-	pendingOTP  map[string]*PendingOTP // keyed by phone number
-	fcmDataDir  string                 // base dir for FCM credential persistence
-	sessionDays int                    // cookie/session TTL in days
+	accounts    map[string]*UserAccount  // keyed by phone number
+	sessions    map[string]*UserSession  // keyed by session ID (cookie)
+	pendingOTP  map[string]*PendingOTP   // keyed by phone number
+	fcmDataDir  string
+	sessionDays int
 	mu          sync.RWMutex
 	logger      *slog.Logger
 }
 
-// NewSessionManager creates a new session manager and starts the reaper.
 func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
 	if sessionDays <= 0 {
 		sessionDays = defaultSessionDays
 	}
 	sm := &SessionManager{
+		accounts:    make(map[string]*UserAccount),
 		sessions:    make(map[string]*UserSession),
 		pendingOTP:  make(map[string]*PendingOTP),
 		fcmDataDir:  fcmDataDir,
@@ -92,22 +117,17 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 	return sm
 }
 
-// CreateSession creates a new user session after successful OTP confirmation.
-func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logger *slog.Logger) (*UserSession, error) {
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, err
+// getOrCreateAccount returns the existing account for a phone, or creates one.
+func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
+	if acct, ok := sm.accounts[phone]; ok {
+		sm.logger.Info("Reusing existing account", "phone", phone)
+		return acct
 	}
-	sessionID := hex.EncodeToString(tokenBytes)
 
 	hermesLogger := logger.With("component", "hermes", "phone", phone)
 	api := gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
 	sr := gm.NewHermesSignalR(auth, gm.WithSignalRLogger(hermesLogger))
 
-	// Create FCM client with persistent storage per phone number.
-	// FCM credentials (androidId, securityToken) persist across restarts
-	// to avoid Google's registration rate limits. These are device-level
-	// credentials for Google's push system, not Garmin auth tokens.
 	var fcmClient *fcm.Client
 	if sm.fcmDataDir != "" {
 		fcmSessionDir := filepath.Join(sm.fcmDataDir, "fcm", phone)
@@ -116,44 +136,42 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 		)
 	}
 
-	session := &UserSession{
-		ID:           sessionID,
-		Phone:        phone,
-		Auth:         auth,
-		API:          api,
-		SignalR:      sr,
-		FCM:          fcmClient,
-		SSE:          NewSSEBroker(),
-		LastActivity: time.Now(),
+	acct := &UserAccount{
+		Phone:   phone,
+		Auth:    auth,
+		API:     api,
+		SignalR: sr,
+		FCM:     fcmClient,
+		SSE:     NewSSEBroker(),
 	}
 
-	// Wire SignalR events to SSE broker
+	// Wire SignalR → shared SSE broker
 	sr.OnMessage(func(msg gm.MessageModel) {
-		session.SSE.Publish(SSEEvent{Type: "message", Data: msg})
+		acct.SSE.Publish(SSEEvent{Type: "message", Data: msg})
 	})
 	sr.OnStatusUpdate(func(update gm.MessageStatusUpdate) {
-		session.SSE.Publish(SSEEvent{Type: "status", Data: update})
+		acct.SSE.Publish(SSEEvent{Type: "status", Data: update})
 	})
 	sr.OnMuteUpdate(func(update gm.ConversationMuteStatusUpdate) {
-		session.SSE.Publish(SSEEvent{Type: "mute", Data: update})
+		acct.SSE.Publish(SSEEvent{Type: "mute", Data: update})
 	})
 	sr.OnBlockUpdate(func(update gm.UserBlockStatusUpdate) {
-		session.SSE.Publish(SSEEvent{Type: "block", Data: update})
+		acct.SSE.Publish(SSEEvent{Type: "block", Data: update})
 	})
 	sr.OnNotification(func(notif gm.ServerNotification) {
-		session.SSE.Publish(SSEEvent{Type: "notification", Data: notif})
+		acct.SSE.Publish(SSEEvent{Type: "notification", Data: notif})
 	})
 	sr.OnOpen(func() {
-		session.SSE.Publish(SSEEvent{Type: "connected", Data: nil})
+		acct.SSE.Publish(SSEEvent{Type: "connected", Data: nil})
 	})
 	sr.OnClose(func() {
-		session.SSE.Publish(SSEEvent{Type: "disconnected", Data: nil})
+		acct.SSE.Publish(SSEEvent{Type: "disconnected", Data: nil})
 	})
 
-	// Wire FCM events to SSE broker (same events, additional delivery path)
+	// Wire FCM → shared SSE broker
 	if fcmClient != nil {
 		fcmClient.OnMessage(func(msg fcm.NewMessage) {
-			session.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
+			acct.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
 		})
 		fcmClient.OnConnected(func() {
 			sm.logger.Debug("FCM connected", "phone", phone)
@@ -166,7 +184,26 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 		})
 	}
 
+	sm.accounts[phone] = acct
+	sm.logger.Info("Account created", "phone", phone)
+	return acct
+}
+
+// CreateSession creates a new browser session, reusing or creating an account.
+func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logger *slog.Logger) (*UserSession, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, err
+	}
+	sessionID := hex.EncodeToString(tokenBytes)
+
 	sm.mu.Lock()
+	acct := sm.getOrCreateAccount(phone, auth, logger)
+	session := &UserSession{
+		ID:           sessionID,
+		Account:      acct,
+		LastActivity: time.Now(),
+	}
 	sm.sessions[sessionID] = session
 	sm.mu.Unlock()
 
@@ -174,62 +211,83 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	return session, nil
 }
 
-// StartFCM registers with Google FCM and starts the MCS listener for a session.
-// FCM runs for the entire session lifetime (not tied to SSE/browser tabs)
-// so that Web Push notifications work even when the browser is closed.
-func (sm *SessionManager) StartFCM(session *UserSession) {
-	session.mu.Lock()
-	if session.fcmStarted || session.FCM == nil {
-		session.mu.Unlock()
+// EnsureSignalR starts SignalR for the account if not already started.
+func (sm *SessionManager) EnsureSignalR(acct *UserAccount) {
+	acct.mu.Lock()
+	defer acct.mu.Unlock()
+
+	if acct.signalRStarted {
 		return
 	}
-	session.fcmStarted = true
-	fcmCtx, cancel := context.WithCancel(context.Background())
-	session.fcmCancel = cancel
-	session.mu.Unlock()
 
-	ctx := fcmCtx
+	srCtx, cancel := context.WithCancel(context.Background())
+	acct.signalRCancel = cancel
+
 	go func() {
-		phone := session.Phone
+		sm.logger.Info("Starting SignalR", "phone", acct.Phone)
+		if err := acct.SignalR.Start(srCtx); err != nil {
+			sm.logger.Error("SignalR start failed", "phone", acct.Phone, "error", err)
+			acct.SSE.Publish(SSEEvent{Type: "error", Data: map[string]string{"message": "SignalR connection failed: " + err.Error()}})
+			acct.mu.Lock()
+			acct.signalRStarted = false
+			acct.mu.Unlock()
+			return
+		}
+		sm.logger.Info("SignalR connected", "phone", acct.Phone)
+	}()
 
-		// Step 1: Register with Google FCM
-		fcmToken, err := session.FCM.Register(ctx)
+	acct.signalRStarted = true
+}
+
+// EnsureFCM starts FCM for the account if not already started.
+func (sm *SessionManager) EnsureFCM(acct *UserAccount) {
+	acct.mu.Lock()
+	if acct.fcmStarted || acct.FCM == nil {
+		acct.mu.Unlock()
+		return
+	}
+	acct.fcmStarted = true
+	fcmCtx, cancel := context.WithCancel(context.Background())
+	acct.fcmCancel = cancel
+	acct.mu.Unlock()
+
+	go func() {
+		phone := acct.Phone
+
+		fcmToken, err := acct.FCM.Register(fcmCtx)
 		if err != nil {
 			sm.logger.Error("FCM registration failed", "phone", phone, "error", err)
-			session.mu.Lock()
-			session.fcmStarted = false
-			session.mu.Unlock()
+			acct.mu.Lock()
+			acct.fcmStarted = false
+			acct.mu.Unlock()
 			return
 		}
 
-		// Step 2: Register FCM token with Garmin's backend
-		if err := session.Auth.UpdatePnsHandle(ctx, fcmToken); err != nil {
+		if err := acct.Auth.UpdatePnsHandle(fcmCtx, fcmToken); err != nil {
 			sm.logger.Warn("Failed to register FCM token with Garmin", "phone", phone, "error", err)
-			// Continue anyway — SignalR still works as primary delivery
 		} else {
 			sm.logger.Info("FCM token registered with Garmin", "phone", phone)
 		}
 
-		// Step 3: Listen with exponential backoff reconnect
 		backoff := fcmInitialBackoff
 		for {
 			select {
-			case <-ctx.Done():
+			case <-fcmCtx.Done():
 				return
 			default:
 			}
 
 			sm.logger.Info("Starting FCM listener", "phone", phone)
-			err := session.FCM.Listen(ctx)
-			if ctx.Err() != nil {
-				return // Context cancelled, clean shutdown
+			err := acct.FCM.Listen(fcmCtx)
+			if fcmCtx.Err() != nil {
+				return
 			}
 
 			sm.logger.Warn("FCM listener disconnected, will reconnect",
 				"phone", phone, "error", err, "backoff", backoff)
 
 			select {
-			case <-ctx.Done():
+			case <-fcmCtx.Done():
 				return
 			case <-time.After(backoff):
 			}
@@ -258,25 +316,46 @@ func (sm *SessionManager) GetFromRequest(r *http.Request) *UserSession {
 	return sm.GetSession(cookie.Value)
 }
 
-// RemoveSession removes and cleans up a session.
+// RemoveSession removes a browser session. If it's the last session for the
+// account, the account's SignalR and FCM are stopped too.
 func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionID]
-	if ok {
-		delete(sm.sessions, sessionID)
+	if !ok {
+		sm.mu.Unlock()
+		return
+	}
+	delete(sm.sessions, sessionID)
+	phone := session.Account.Phone
+
+	// Check if any other sessions still reference this account
+	accountInUse := false
+	for _, s := range sm.sessions {
+		if s.Account.Phone == phone {
+			accountInUse = true
+			break
+		}
+	}
+
+	if !accountInUse {
+		sm.stopAccount(session.Account)
+		delete(sm.accounts, phone)
 	}
 	sm.mu.Unlock()
 
-	if ok {
-		session.SignalR.Stop()
-		if session.signalRCancel != nil {
-			session.signalRCancel()
-		}
-		if session.fcmCancel != nil {
-			session.fcmCancel()
-		}
-		sm.logger.Info("Session removed", "phone", session.Phone)
+	sm.logger.Info("Session removed", "phone", phone, "accountRemoved", !accountInUse)
+}
+
+// stopAccount shuts down all connections for an account.
+func (sm *SessionManager) stopAccount(acct *UserAccount) {
+	acct.SignalR.Stop()
+	if acct.signalRCancel != nil {
+		acct.signalRCancel()
 	}
+	if acct.fcmCancel != nil {
+		acct.fcmCancel()
+	}
+	sm.logger.Info("Account stopped", "phone", acct.Phone)
 }
 
 // StorePendingOTP stores a pending OTP request.
@@ -327,28 +406,19 @@ func ClearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// withSession adds the session to the request context.
 func withSession(ctx context.Context, session *UserSession) context.Context {
 	return context.WithValue(ctx, sessionContextKey, session)
 }
 
-// getSession retrieves the session from the request context.
 func getSession(ctx context.Context) *UserSession {
 	session, _ := ctx.Value(sessionContextKey).(*UserSession)
 	return session
 }
 
-func generateSessionID() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
+// ---------------------------------------------------------------------------
+// Reaper
+// ---------------------------------------------------------------------------
 
-// reaper periodically cleans up idle sessions.
-// Sessions with active SSE subscribers are never reaped.
-// Sessions without subscribers have their SignalR/FCM stopped after 30 min
-// (reconnected on next browser visit), but the session itself is kept alive
-// for the full configured TTL (sessionDays) so the user doesn't need to re-login.
 func (sm *SessionManager) reaper() {
 	ticker := time.NewTicker(reaperInterval)
 	defer ticker.Stop()
@@ -358,42 +428,50 @@ func (sm *SessionManager) reaper() {
 		now := time.Now()
 		sessionTTL := time.Duration(sm.sessionDays) * 24 * time.Hour
 
+		// Expire old sessions
 		for id, session := range sm.sessions {
 			session.mu.Lock()
 			idle := now.Sub(session.LastActivity)
 			session.mu.Unlock()
 
-			hasSubscribers := session.SSE.SubscriberCount() > 0
-
 			if idle > sessionTTL {
-				// Session expired — remove entirely (both SignalR and FCM)
-				sm.logger.Info("Session expired", "phone", session.Phone, "idle", idle)
-				session.SignalR.Stop()
-				if session.signalRCancel != nil {
-					session.signalRCancel()
-				}
-				if session.fcmCancel != nil {
-					session.fcmCancel()
-				}
+				sm.logger.Info("Session expired", "phone", session.Account.Phone, "idle", idle)
 				delete(sm.sessions, id)
-			} else if idle > sessionMaxIdle && !hasSubscribers {
-				// No browser tabs open for 30 min — stop SignalR to save resources
-				// (it only feeds SSE which has no subscribers anyway).
-				// FCM keeps running for Web Push delivery.
-				if session.signalRStarted {
-					sm.logger.Debug("Pausing SignalR for idle session (FCM stays for push)", "phone", session.Phone, "idle", idle)
-					session.SignalR.Stop()
-					if session.signalRCancel != nil {
-						session.signalRCancel()
-					}
-					session.mu.Lock()
-					session.signalRStarted = false
-					session.mu.Unlock()
-				}
 			}
 		}
 
-		// Clean up old pending OTPs (older than 5 minutes)
+		// For each account, check if it still has active sessions
+		for phone, acct := range sm.accounts {
+			hasSession := false
+			for _, s := range sm.sessions {
+				if s.Account.Phone == phone {
+					hasSession = true
+					break
+				}
+			}
+
+			if !hasSession {
+				// No sessions left — stop everything
+				sm.stopAccount(acct)
+				delete(sm.accounts, phone)
+				continue
+			}
+
+			// If no SSE subscribers (all browser tabs closed), pause SignalR
+			// but keep FCM for Web Push
+			if acct.SSE.SubscriberCount() == 0 && acct.signalRStarted {
+				sm.logger.Debug("Pausing SignalR (no browser tabs, FCM stays for push)", "phone", phone)
+				acct.SignalR.Stop()
+				if acct.signalRCancel != nil {
+					acct.signalRCancel()
+				}
+				acct.mu.Lock()
+				acct.signalRStarted = false
+				acct.mu.Unlock()
+			}
+		}
+
+		// Clean up old pending OTPs
 		for phone, pending := range sm.pendingOTP {
 			if now.Sub(pending.CreatedAt) > 5*time.Minute {
 				delete(sm.pendingOTP, phone)
@@ -403,7 +481,6 @@ func (sm *SessionManager) reaper() {
 	}
 }
 
-// ensureFCMDataDir creates the FCM data directory if it doesn't exist.
 func ensureFCMDataDir(dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }

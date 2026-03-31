@@ -30,7 +30,7 @@ func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	result, err := session.API.GetConversations(r.Context(), opts...)
+	result, err := session.Account.API.GetConversations(r.Context(), opts...)
 	if err != nil {
 		handleAPIError(w, err, "get conversations")
 		return
@@ -70,7 +70,7 @@ func (s *Server) handleGetConversationDetail(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	result, err := session.API.GetConversationDetail(r.Context(), convID, opts...)
+	result, err := session.Account.API.GetConversationDetail(r.Context(), convID, opts...)
 	if err != nil {
 		handleAPIError(w, err, "get conversation detail")
 		return
@@ -87,7 +87,7 @@ func (s *Server) handleGetConversationMembers(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	result, err := session.API.GetConversationMembers(r.Context(), convID)
+	result, err := session.Account.API.GetConversationMembers(r.Context(), convID)
 	if err != nil {
 		handleAPIError(w, err, "get conversation members")
 		return
@@ -126,7 +126,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		"bodyLen", len(req.Body),
 	)
 
-	result, err := session.API.SendMessage(r.Context(), req.To, req.Body)
+	result, err := session.Account.API.SendMessage(r.Context(), req.To, req.Body)
 	if err != nil {
 		handleAPIError(w, err, "send message")
 		return
@@ -154,7 +154,7 @@ func (s *Server) handleMarkAsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := session.API.MarkAsRead(r.Context(), convID, msgID)
+	result, err := session.Account.API.MarkAsRead(r.Context(), convID, msgID)
 	if err != nil {
 		handleAPIError(w, err, "mark as read")
 		return
@@ -187,7 +187,7 @@ func (s *Server) handleGetMediaURL(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaType := gm.MediaType(r.URL.Query().Get("mediaType"))
 
-	result, err := session.API.GetMediaDownloadURL(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
+	result, err := session.Account.API.GetMediaDownloadURL(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
 	if err != nil {
 		handleAPIError(w, err, "get media URL")
 		return
@@ -206,7 +206,7 @@ func (s *Server) handleLeaveConversation(w http.ResponseWriter, r *http.Request)
 
 	s.logger.Debug("Leaving conversation", "conversationId", convID)
 
-	if err := session.API.LeaveConversation(r.Context(), convID); err != nil {
+	if err := session.Account.API.LeaveConversation(r.Context(), convID); err != nil {
 		handleAPIError(w, err, "leave conversation")
 		return
 	}
@@ -236,7 +236,7 @@ func (s *Server) handleSendReaction(w http.ResponseWriter, r *http.Request) {
 	// Build ZWS-encoded reaction body matching Garmin native app format
 	body := "\u200b" + req.Emoji + "\u200b to \u200a" + req.TargetBody + "\u200a"
 
-	result, err := session.API.SendMessage(r.Context(), req.To, body)
+	result, err := session.Account.API.SendMessage(r.Context(), req.To, body)
 	if err != nil {
 		handleAPIError(w, err, "send reaction")
 		return
@@ -263,7 +263,7 @@ func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
 
 	// Derive the Hermes user ID from the phone number
 	recipientID := gm.PhoneToHermesUserID(req.Phone)
-	result, err := session.API.SendMessage(r.Context(), []string{recipientID}, req.Body)
+	result, err := session.Account.API.SendMessage(r.Context(), []string{recipientID}, req.Body)
 	if err != nil {
 		handleAPIError(w, err, "send new chat message")
 		return

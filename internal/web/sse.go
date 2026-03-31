@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,27 +13,23 @@ type SSEEvent struct {
 	Data any
 }
 
-// SSEBroker manages SSE subscribers for a single user session.
+// SSEBroker manages SSE subscribers for a single user account.
 type SSEBroker struct {
 	subscribers     map[chan SSEEvent]struct{}
-	onNoSubscribers func(SSEEvent) // called when publishing with zero subscribers
+	onNoSubscribers func(SSEEvent)
 	mu              sync.RWMutex
 }
 
-// NewSSEBroker creates a new SSE broker.
 func NewSSEBroker() *SSEBroker {
 	return &SSEBroker{
 		subscribers: make(map[chan SSEEvent]struct{}),
 	}
 }
 
-// OnNoSubscribers sets a callback invoked when Publish is called
-// but there are no active SSE subscribers (e.g., all browser tabs closed).
 func (b *SSEBroker) OnNoSubscribers(fn func(SSEEvent)) {
 	b.onNoSubscribers = fn
 }
 
-// Subscribe creates a new subscriber channel.
 func (b *SSEBroker) Subscribe() chan SSEEvent {
 	ch := make(chan SSEEvent, 64)
 	b.mu.Lock()
@@ -43,18 +38,14 @@ func (b *SSEBroker) Subscribe() chan SSEEvent {
 	return ch
 }
 
-// Unsubscribe removes a subscriber channel.
 func (b *SSEBroker) Unsubscribe(ch chan SSEEvent) {
 	b.mu.Lock()
 	delete(b.subscribers, ch)
 	b.mu.Unlock()
-	// Drain remaining events to prevent goroutine leak
 	for range ch {
 	}
 }
 
-// Publish sends an event to all subscribers.
-// If there are no subscribers and onNoSubscribers is set, it calls that instead.
 func (b *SSEBroker) Publish(event SSEEvent) {
 	b.mu.RLock()
 	count := len(b.subscribers)
@@ -73,12 +64,10 @@ func (b *SSEBroker) Publish(event SSEEvent) {
 		select {
 		case ch <- event:
 		default:
-			// Drop events if subscriber is too slow
 		}
 	}
 }
 
-// SubscriberCount returns the number of active subscribers.
 func (b *SSEBroker) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -102,16 +91,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Start SignalR and FCM on first SSE connection
-	s.ensureSignalR(session, r.Context())
-	s.sessions.StartFCM(session)
+	acct := session.Account
 
-	ch := session.SSE.Subscribe()
-	defer session.SSE.Unsubscribe(ch)
+	// Start shared SignalR + FCM for this account (idempotent)
+	s.sessions.EnsureSignalR(acct)
+	s.sessions.EnsureFCM(acct)
 
-	// Send initial connected event
+	// Subscribe to the shared SSE broker
+	ch := acct.SSE.Subscribe()
+	defer acct.SSE.Unsubscribe(ch)
+
 	writeSSEEvent(w, "connected", nil)
 	flusher.Flush()
 
@@ -124,34 +115,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-}
-
-// ensureSignalR starts SignalR for the session if not already started.
-func (s *Server) ensureSignalR(session *UserSession, ctx context.Context) {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	if session.signalRStarted {
-		return
-	}
-
-	srCtx, cancel := context.WithCancel(context.Background())
-	session.signalRCancel = cancel
-
-	go func() {
-		s.logger.Info("Starting SignalR", "phone", session.Phone)
-		if err := session.SignalR.Start(srCtx); err != nil {
-			s.logger.Error("SignalR start failed", "phone", session.Phone, "error", err)
-			session.SSE.Publish(SSEEvent{Type: "error", Data: map[string]string{"message": "SignalR connection failed: " + err.Error()}})
-			session.mu.Lock()
-			session.signalRStarted = false
-			session.mu.Unlock()
-			return
-		}
-		s.logger.Info("SignalR connected", "phone", session.Phone)
-	}()
-
-	session.signalRStarted = true
 }
 
 func writeSSEEvent(w http.ResponseWriter, eventType string, data any) {
