@@ -175,26 +175,31 @@ async function loadMoreConversations() {
     try {
         const resp = await api(`/api/conversations?after=${lastConversationCursor}`);
         const more = resp.conversations || [];
-        if (more.length === 0) {
-            hasMoreConversations = false;
-            renderConversations();
-            return;
-        }
-        // Deduplicate and append
+
+        // Deduplicate and count actually new conversations
         const existing = new Set(state.conversations.map(c => c.conversationId));
+        let added = 0;
         for (const conv of more) {
             if (!existing.has(conv.conversationId)) {
                 state.conversations.push(conv);
+                added++;
             }
         }
-        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
-        lastConversationCursor = resp.lastConversationId || null;
-        hasMoreConversations = !!lastConversationCursor;
+
+        // If no new conversations were added, we've loaded everything
+        if (added === 0) {
+            hasMoreConversations = false;
+        } else {
+            state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
+            lastConversationCursor = resp.lastConversationId || null;
+            hasMoreConversations = !!lastConversationCursor && added > 0;
+            for (const conv of more) {
+                loadMembers(conv.conversationId);
+            }
+        }
+
         cache.set('conversations', state.conversations);
         renderConversations();
-        for (const conv of more) {
-            loadMembers(conv.conversationId);
-        }
     } catch (e) {
         console.error('Failed to load more conversations:', e);
     }
