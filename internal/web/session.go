@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +25,9 @@ const (
 	// FCM reconnect backoff parameters
 	fcmInitialBackoff = 5 * time.Second
 	fcmMaxBackoff     = 5 * time.Minute
+
+	// Default session/cookie TTL
+	defaultSessionDays = 30
 )
 
 type contextKey string
@@ -64,23 +68,111 @@ type PendingOTP struct {
 
 // SessionManager manages user sessions.
 type SessionManager struct {
-	sessions   map[string]*UserSession
-	pendingOTP map[string]*PendingOTP // keyed by phone number
-	fcmDataDir string                 // base dir for FCM credential persistence
-	mu         sync.RWMutex
-	logger     *slog.Logger
+	sessions    map[string]*UserSession
+	pendingOTP  map[string]*PendingOTP // keyed by phone number
+	fcmDataDir  string                 // base dir for FCM credential persistence
+	sessionDays int                    // cookie/session TTL in days
+	mu          sync.RWMutex
+	logger      *slog.Logger
+}
+
+// sessionIndexEntry is a single entry in the on-disk session index.
+type sessionIndexEntry struct {
+	SessionID string `json:"sessionId"`
+	Phone     string `json:"phone"`
+	CreatedAt string `json:"createdAt"`
 }
 
 // NewSessionManager creates a new session manager and starts the reaper.
-func NewSessionManager(logger *slog.Logger, fcmDataDir string) *SessionManager {
+func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
+	if sessionDays <= 0 {
+		sessionDays = defaultSessionDays
+	}
 	sm := &SessionManager{
-		sessions:   make(map[string]*UserSession),
-		pendingOTP: make(map[string]*PendingOTP),
-		fcmDataDir: fcmDataDir,
-		logger:     logger,
+		sessions:    make(map[string]*UserSession),
+		pendingOTP:  make(map[string]*PendingOTP),
+		fcmDataDir:  fcmDataDir,
+		sessionDays: sessionDays,
+		logger:      logger,
 	}
 	go sm.reaper()
 	return sm
+}
+
+// RestoreSessions restores persisted sessions from disk.
+// Called once at startup before the server begins accepting requests.
+func (sm *SessionManager) RestoreSessions(logger *slog.Logger) {
+	if sm.fcmDataDir == "" {
+		return
+	}
+
+	indexPath := filepath.Join(sm.fcmDataDir, "sessions", "index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return // No saved sessions, that's fine
+	}
+
+	var entries []sessionIndexEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		sm.logger.Warn("Failed to parse session index", "error", err)
+		return
+	}
+
+	for _, entry := range entries {
+		sessionDir := filepath.Join(sm.fcmDataDir, "sessions", entry.Phone)
+		auth := gm.NewHermesAuth(
+			gm.WithLogger(logger),
+			gm.WithSessionDir(sessionDir),
+		)
+		if err := auth.Resume(context.Background()); err != nil {
+			sm.logger.Warn("Failed to restore session, skipping",
+				"phone", entry.Phone, "error", err)
+			continue
+		}
+
+		session, err := sm.CreateSession(entry.Phone, auth, logger)
+		if err != nil {
+			sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
+			continue
+		}
+
+		// Use the original session ID so the cookie still works
+		sm.mu.Lock()
+		delete(sm.sessions, session.ID)
+		session.ID = entry.SessionID
+		sm.sessions[entry.SessionID] = session
+		sm.mu.Unlock()
+
+		sm.logger.Info("Restored session", "phone", entry.Phone, "sessionId", entry.SessionID[:8]+"...")
+	}
+}
+
+// saveSessionIndex persists the current session index to disk.
+func (sm *SessionManager) saveSessionIndex() {
+	if sm.fcmDataDir == "" {
+		return
+	}
+
+	sm.mu.RLock()
+	entries := make([]sessionIndexEntry, 0, len(sm.sessions))
+	for _, session := range sm.sessions {
+		entries = append(entries, sessionIndexEntry{
+			SessionID: session.ID,
+			Phone:     session.Phone,
+			CreatedAt: session.LastActivity.Format(time.RFC3339),
+		})
+	}
+	sm.mu.RUnlock()
+
+	indexPath := filepath.Join(sm.fcmDataDir, "sessions", "index.json")
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		sm.logger.Error("Failed to create sessions directory", "error", err)
+		return
+	}
+	data, _ := json.MarshalIndent(entries, "", "  ")
+	if err := os.WriteFile(indexPath, data, 0o600); err != nil {
+		sm.logger.Error("Failed to save session index", "error", err)
+	}
 }
 
 // CreateSession creates a new user session after successful OTP confirmation.
@@ -160,6 +252,9 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	sm.mu.Lock()
 	sm.sessions[sessionID] = session
 	sm.mu.Unlock()
+
+	// Persist session index so this session survives restarts
+	sm.saveSessionIndex()
 
 	sm.logger.Info("Session created", "phone", phone, "sessionId", sessionID[:8]+"...")
 	return session, nil
@@ -259,6 +354,7 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 		if session.cancel != nil {
 			session.cancel()
 		}
+		sm.saveSessionIndex()
 		sm.logger.Info("Session removed", "phone", session.Phone)
 	}
 }
@@ -286,14 +382,17 @@ func (sm *SessionManager) GetPendingOTP(phone string) *PendingOTP {
 }
 
 // SetSessionCookie sets the session cookie on the response.
-func SetSessionCookie(w http.ResponseWriter, sessionID string) {
+func SetSessionCookie(w http.ResponseWriter, sessionID string, maxAgeDays int) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = defaultSessionDays
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400 * 30, // 30 days
+		MaxAge:   86400 * maxAgeDays,
 	})
 }
 

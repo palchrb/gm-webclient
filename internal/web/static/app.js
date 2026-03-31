@@ -18,7 +18,7 @@ async function init() {
         if (resp.loggedIn) {
             state.loggedIn = true;
             state.phone = resp.phone;
-            state.userId = resp.userId;
+            state.userId = (resp.userId || '').toLowerCase();
             showChatView();
             loadConversations();
             connectSSE();
@@ -145,9 +145,14 @@ async function loadMembers(convId) {
         const members = await api(`/api/conversations/${convId}/members`);
         state.members[convId] = members;
         for (const m of members) {
-            const key = m.userIdentifier || m.address;
-            if (key && m.friendlyName) {
-                state.memberNames[key] = m.friendlyName;
+            const name = m.friendlyName || m.address || '';
+            if (!name) continue;
+            // Store by both UUID (lowercased) and phone number for reliable lookup
+            if (m.userIdentifier) {
+                state.memberNames[m.userIdentifier.toLowerCase()] = name;
+            }
+            if (m.address) {
+                state.memberNames[m.address] = name;
             }
         }
         renderConversations();
@@ -231,14 +236,17 @@ async function sendMessage() {
         return;
     }
 
+    const convId = state.currentConversationId;
     input.value = '';
     input.focus();
 
     try {
-        await api('/api/messages/send', {
+        const result = await api('/api/messages/send', {
             method: 'POST',
-            body: { conversationId: state.currentConversationId, to, body }
+            body: { conversationId: convId, to, body }
         });
+        // Optimistically add sent message to UI immediately
+        addOptimisticMessage(convId, result.messageId, body);
     } catch (e) {
         console.error('Failed to send message:', e);
         input.value = body;
@@ -264,6 +272,39 @@ function getRecipientPhones(convId) {
         }
     }
     return phones;
+}
+
+// Add an optimistic message to the current conversation view immediately.
+function addOptimisticMessage(convId, messageId, body) {
+    if (state.currentConversationId !== convId) return;
+    // Avoid duplicate if SSE already delivered it
+    if (state.messages.find(m => m.messageId === messageId)) return;
+    state.messages.push({
+        messageId: messageId,
+        conversationId: convId,
+        from: state.userId,
+        messageBody: body,
+        sentAt: new Date().toISOString(),
+        status: [],
+    });
+    renderMessages();
+    scrollToBottom();
+}
+
+// Reload the current conversation messages from the server.
+async function reloadCurrentConversation() {
+    const convId = state.currentConversationId;
+    if (!convId) return;
+    try {
+        const resp = await api(`/api/conversations/${convId}?limit=50`);
+        state.messages = (resp.messages || []).sort(
+            (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+        );
+        renderMessages();
+        scrollToBottom();
+    } catch (e) {
+        console.error('Failed to reload conversation:', e);
+    }
 }
 
 function handleMessageKeydown(event) {
@@ -334,25 +375,34 @@ function getMediaProxyUrl(msg, convId) {
 
 async function sendMediaFile(file) {
     if (!state.currentConversationId) return;
-    const to = getRecipientPhones(state.currentConversationId);
+    const convId = state.currentConversationId;
+    const to = getRecipientPhones(convId);
     if (to.length === 0) {
         console.error('No recipient phone numbers found');
         return;
     }
 
+    // Show optimistic "sending..." message
+    const tempId = 'temp-' + Date.now();
+    addOptimisticMessage(convId, tempId, file.type.startsWith('image/') ? '(sending image...)' : '(sending audio...)');
+
     const form = new FormData();
     form.append('file', file);
     form.append('to', JSON.stringify(to));
-    form.append('conversationId', state.currentConversationId);
+    form.append('conversationId', convId);
 
     try {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        console.log('Media sent:', data);
+        // Reload conversation to get the full message with media details
+        reloadCurrentConversation();
     } catch (e) {
         console.error('Failed to send media:', e);
         alert('Failed to send media: ' + e.message);
+        // Remove optimistic message on failure
+        state.messages = state.messages.filter(m => m.messageId !== tempId);
+        renderMessages();
     }
 }
 
@@ -609,17 +659,20 @@ function renderMessages() {
 function getConversationName(conv) {
     const members = state.members[conv.conversationId] || [];
     const otherMembers = members.filter(m => {
-        const id = m.userIdentifier || m.address;
-        return id !== state.userId;
+        const id = (m.userIdentifier || '').toLowerCase();
+        const addr = m.address || '';
+        return id !== state.userId && addr !== state.phone;
     });
 
     if (otherMembers.length > 0) {
         return otherMembers.map(m => m.friendlyName || m.address || 'Unknown').join(', ');
     }
 
-    // Fallback: use member IDs
-    const otherIds = conv.memberIds.filter(id => id !== state.userId);
-    return otherIds.map(id => state.memberNames[id] || id.substring(0, 8) + '...').join(', ');
+    // Fallback: use member IDs, lookup name by lowercase UUID
+    const otherIds = conv.memberIds.filter(id => id.toLowerCase() !== state.userId);
+    return otherIds.map(id => {
+        return state.memberNames[id] || state.memberNames[id.toLowerCase()] || id.substring(0, 8) + '...';
+    }).join(', ');
 }
 
 function updateConversationTitle(convId) {
@@ -640,7 +693,10 @@ function isMine(msg) {
 function getSenderName(msg) {
     const from = msg.from;
     if (!from) return null;
-    return state.memberNames[from] || from;
+    // Try exact match, then lowercase (UUIDs from API may differ in case)
+    return state.memberNames[from]
+        || state.memberNames[from.toLowerCase()]
+        || from;
 }
 
 function getMessageBody(msg) {

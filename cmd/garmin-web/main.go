@@ -5,6 +5,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yourusername/matrix-garmin-messenger/internal/web"
@@ -12,9 +13,10 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
-	dataDir := flag.String("data-dir", "", "Directory for persistent data (FCM credentials, VAPID keys, push subscriptions)")
+	dataDir := flag.String("data-dir", "", "Directory for persistent data (FCM credentials, VAPID keys, push subscriptions, sessions)")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	phoneWhitelist := flag.String("phone-whitelist", "", "Comma-separated list of phone numbers allowed to log in (e.g. \"+4712345678,+4787654321\"). Empty allows all.")
+	sessionDays := flag.Int("session-days", 7, "Number of days a login session/cookie is valid")
 	flag.Parse()
 
 	var level slog.Level
@@ -43,8 +45,9 @@ func main() {
 		log.Printf("FCM push enabled, data dir: %s", *dataDir)
 	}
 
-	// Parse phone whitelist from flag or PHONE_WHITELIST env var
 	var opts []web.ServerOption
+
+	// Phone whitelist from flag or env var
 	whitelist := *phoneWhitelist
 	if whitelist == "" {
 		whitelist = os.Getenv("PHONE_WHITELIST")
@@ -55,6 +58,18 @@ func main() {
 			opts = append(opts, web.WithPhoneWhitelist(phones))
 			log.Printf("Phone whitelist enabled: %v", phones)
 		}
+	}
+
+	// Session TTL from flag or env var
+	days := *sessionDays
+	if envDays := os.Getenv("SESSION_DAYS"); envDays != "" {
+		if d, err := strconv.Atoi(envDays); err == nil && d > 0 {
+			days = d
+		}
+	}
+	if days > 0 {
+		opts = append(opts, web.WithSessionDays(days))
+		log.Printf("Session TTL: %d days", days)
 	}
 
 	srv := web.NewServer(logger, *dataDir, vapidKeys, opts...)

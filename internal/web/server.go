@@ -38,6 +38,15 @@ func WithPhoneWhitelist(phones []string) ServerOption {
 	}
 }
 
+// WithSessionDays sets the cookie/session TTL in days.
+func WithSessionDays(days int) ServerOption {
+	return func(s *Server) {
+		if days > 0 {
+			s.sessions.sessionDays = days
+		}
+	}
+}
+
 // NewServer creates a new web server.
 // dataDir is the base directory for persistent data (FCM creds, VAPID keys, push subscriptions).
 // Empty disables FCM and push.
@@ -48,7 +57,7 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 	}
 
 	s := &Server{
-		sessions:  NewSessionManager(logger, dataDir),
+		sessions:  NewSessionManager(logger, dataDir, defaultSessionDays),
 		vapidKeys: vapidKeys,
 		pushStore: pushStore,
 		logger:    logger,
@@ -57,6 +66,10 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// Restore persisted sessions from disk (survives Docker restarts)
+	s.sessions.RestoreSessions(logger)
+
 	s.registerRoutes()
 	return s
 }
