@@ -410,21 +410,23 @@ async function reloadCurrentConversation(delayMs) {
         const serverMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
-        // Keep only optimistic messages that:
-        // 1. Are still actively 'sending' (API hasn't returned yet)
-        // 2. Have a real server ID (from replaceOptimisticMessage) but aren't in server response yet
-        // Drop 'sending' messages with temp IDs — the server response should contain the real version
+
         const serverIds = new Set(serverMsgs.map(m => m.messageId));
         const optimistic = state.messages.filter(m => {
             if (!m._sendState) return false;
-            // Keep failed messages so the user sees the error
             if (m._sendState === 'failed') return true;
-            // Drop temp IDs (sending-*) — the reload should have the real message now
             if (m.messageId.startsWith('sending-')) return false;
-            // Keep messages with real IDs not yet in server response
             return !serverIds.has(m.messageId);
         });
-        state.messages = [...serverMsgs, ...optimistic];
+
+        const newMessages = [...serverMsgs, ...optimistic];
+
+        // Only re-render if the message list actually changed
+        const oldIds = state.messages.map(m => m.messageId).join(',');
+        const newIds = newMessages.map(m => m.messageId).join(',');
+        if (oldIds === newIds) return; // no change, skip re-render
+
+        state.messages = newMessages;
         cache.set('msgs_' + convId, serverMsgs);
         renderMessages();
         scrollToBottom();
