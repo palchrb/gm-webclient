@@ -351,6 +351,7 @@ body {
 .messages {
     flex: 1;
     overflow-y: auto;
+    overflow-anchor: auto; /* browser scroll anchoring */
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -752,6 +753,11 @@ body {
 }
 
 /* ─── Media ─── */
+.message-image-container {
+    min-height: 100px;
+    max-width: min(300px, 100%);
+}
+
 .message-image {
     max-width: min(300px, 100%);
     max-height: 300px;
