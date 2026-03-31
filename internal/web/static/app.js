@@ -1360,9 +1360,17 @@ function closeAllPickers() {
 }
 
 function autoClosePicker(picker) {
-    setTimeout(() => document.addEventListener('click', function close(ev) {
-        if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); }
-    }), 0);
+    // Delay adding the listener so the opening click doesn't immediately close it
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.addEventListener('click', function close(ev) {
+                if (!picker.contains(ev.target) && !ev.target.closest('.composer-btn')) {
+                    picker.remove();
+                    document.removeEventListener('click', close);
+                }
+            });
+        });
+    });
 }
 
 async function sendReaction(messageId, emoji) {
