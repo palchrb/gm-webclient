@@ -41,11 +41,19 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check phone whitelist
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
+		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", req.Phone)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+
 	if req.DeviceName == "" {
 		req.DeviceName = "Garmin Messenger Web"
 	}
 
-	// Create a new HermesAuth without session dir (no disk persistence)
+	// Auth tokens are kept in server memory only — not persisted to disk.
+	// A Docker restart requires re-login, but no user data is stored on the server.
 	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
 
 	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, req.DeviceName)
@@ -114,7 +122,8 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		s.sendWebPush(session, event)
 	})
 
-	SetSessionCookie(w, session.ID)
+	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+	s.PersistSessions()
 
 	userID := gm.PhoneToHermesUserID(req.Phone)
 	writeJSON(w, http.StatusOK, authStatusResponse{
@@ -143,6 +152,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 	if session != nil {
 		s.sessions.RemoveSession(session.ID)
+		s.PersistSessions()
 	}
 	ClearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})

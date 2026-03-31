@@ -1,15 +1,34 @@
 services:
-  matrix-garmin-messenger:
-    image: ghcr.io/yourusername/matrix-garmin-messenger:latest
+  garmin-web:
+    image: ghcr.io/palchrb/gm-webclient:latest
     # Or build locally:
     # build: .
-    container_name: matrix-garmin-messenger
+    container_name: garmin-web
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
-      - ./data:/data
+      - garmin-web-data:/data
     environment:
-      - UID=1337
-      - GID=1337
-    # Only needed if your homeserver can't reach the container on the Docker network.
-    # ports:
-    #   - "29340:29340"
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Restrict login to specific phone numbers (comma-separated, with country code).
+      # Leave empty or unset to allow all phone numbers.
+      # Example: PHONE_WHITELIST=+4712345678,+4787654321
+      - PHONE_WHITELIST=${PHONE_WHITELIST:-}
+      # How many days a login session stays valid (default: 7)
+      - SESSION_DAYS=${SESSION_DAYS:-7}
+      # Set a secret key to persist sessions across Docker restarts.
+      # Sessions are AES-256-GCM encrypted on disk — the file is useless without this key.
+      # Leave empty to keep sessions in memory only (re-login required after restart).
+      # Example: SESSION_KEY=my-secret-key-change-me
+      - SESSION_KEY=${SESSION_KEY:-}
+    command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
+    # Volume stores FCM credentials only (Google device IDs for push).
+    # Garmin auth tokens are NOT stored on disk.
+
+volumes:
+  garmin-web-data:
+    # Proxy via Caddy/nginx for HTTPS:
+    #   messenger.example.com {
+    #       reverse_proxy garmin-web:8080
+    #   }

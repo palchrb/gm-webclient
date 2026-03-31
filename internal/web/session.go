@@ -24,6 +24,9 @@ const (
 	// FCM reconnect backoff parameters
 	fcmInitialBackoff = 5 * time.Second
 	fcmMaxBackoff     = 5 * time.Minute
+
+	// Default session/cookie TTL
+	defaultSessionDays = 30
 )
 
 type contextKey string
@@ -64,20 +67,25 @@ type PendingOTP struct {
 
 // SessionManager manages user sessions.
 type SessionManager struct {
-	sessions   map[string]*UserSession
-	pendingOTP map[string]*PendingOTP // keyed by phone number
-	fcmDataDir string                 // base dir for FCM credential persistence
-	mu         sync.RWMutex
-	logger     *slog.Logger
+	sessions    map[string]*UserSession
+	pendingOTP  map[string]*PendingOTP // keyed by phone number
+	fcmDataDir  string                 // base dir for FCM credential persistence
+	sessionDays int                    // cookie/session TTL in days
+	mu          sync.RWMutex
+	logger      *slog.Logger
 }
 
 // NewSessionManager creates a new session manager and starts the reaper.
-func NewSessionManager(logger *slog.Logger, fcmDataDir string) *SessionManager {
+func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
+	if sessionDays <= 0 {
+		sessionDays = defaultSessionDays
+	}
 	sm := &SessionManager{
-		sessions:   make(map[string]*UserSession),
-		pendingOTP: make(map[string]*PendingOTP),
-		fcmDataDir: fcmDataDir,
-		logger:     logger,
+		sessions:    make(map[string]*UserSession),
+		pendingOTP:  make(map[string]*PendingOTP),
+		fcmDataDir:  fcmDataDir,
+		sessionDays: sessionDays,
+		logger:      logger,
 	}
 	go sm.reaper()
 	return sm
@@ -286,14 +294,17 @@ func (sm *SessionManager) GetPendingOTP(phone string) *PendingOTP {
 }
 
 // SetSessionCookie sets the session cookie on the response.
-func SetSessionCookie(w http.ResponseWriter, sessionID string) {
+func SetSessionCookie(w http.ResponseWriter, sessionID string, maxAgeDays int) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = defaultSessionDays
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400 * 30, // 30 days
+		MaxAge:   86400 * maxAgeDays,
 	})
 }
 

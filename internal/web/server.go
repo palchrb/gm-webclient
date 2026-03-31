@@ -12,31 +12,96 @@ var staticFiles embed.FS
 
 // Server is the HTTP server for the Garmin Messenger web client.
 type Server struct {
-	sessions  *SessionManager
-	vapidKeys *VAPIDKeys
-	pushStore *PushSubscriptionStore
-	logger    *slog.Logger
-	mux       *http.ServeMux
+	sessions       *SessionManager
+	sessionStore   *SessionStore // nil when SESSION_KEY is not set
+	vapidKeys      *VAPIDKeys
+	pushStore      *PushSubscriptionStore
+	logger         *slog.Logger
+	mux            *http.ServeMux
+	phoneWhitelist map[string]bool // nil = allow all, non-nil = only listed phones
+}
+
+// ServerOption configures the Server.
+type ServerOption func(*Server)
+
+// WithPhoneWhitelist restricts login to the specified phone numbers.
+// Phone numbers should include the country code (e.g. "+4712345678").
+// An empty list disables the whitelist (allows all).
+func WithPhoneWhitelist(phones []string) ServerOption {
+	return func(s *Server) {
+		if len(phones) == 0 {
+			return
+		}
+		s.phoneWhitelist = make(map[string]bool, len(phones))
+		for _, p := range phones {
+			s.phoneWhitelist[p] = true
+		}
+	}
+}
+
+// WithSessionDays sets the cookie/session TTL in days.
+func WithSessionDays(days int) ServerOption {
+	return func(s *Server) {
+		if days > 0 {
+			s.sessions.sessionDays = days
+		}
+	}
+}
+
+// WithSessionKey enables encrypted session persistence using the given key.
+// Sessions are AES-256-GCM encrypted and stored in the data directory.
+// Without this, sessions live only in memory and are lost on restart.
+func WithSessionKey(key string) ServerOption {
+	return func(s *Server) {
+		if key == "" || s.sessions.fcmDataDir == "" {
+			return
+		}
+		store, err := NewSessionStore(s.sessions.fcmDataDir, key, s.logger)
+		if err != nil {
+			s.logger.Error("Failed to initialize session store", "error", err)
+			return
+		}
+		s.sessionStore = store
+	}
 }
 
 // NewServer creates a new web server.
 // dataDir is the base directory for persistent data (FCM creds, VAPID keys, push subscriptions).
 // Empty disables FCM and push.
-func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys) *Server {
+func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts ...ServerOption) *Server {
 	var pushStore *PushSubscriptionStore
 	if dataDir != "" {
 		pushStore = NewPushSubscriptionStore(dataDir)
 	}
 
 	s := &Server{
-		sessions:  NewSessionManager(logger, dataDir),
+		sessions:  NewSessionManager(logger, dataDir, defaultSessionDays),
 		vapidKeys: vapidKeys,
 		pushStore: pushStore,
 		logger:    logger,
 		mux:       http.NewServeMux(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Restore encrypted sessions from disk if SESSION_KEY is configured
+	if s.sessionStore != nil {
+		n := s.sessions.RestoreSessions(s.sessionStore, logger)
+		if n > 0 {
+			logger.Info("Restored encrypted sessions", "count", n)
+		}
+	}
+
 	s.registerRoutes()
 	return s
+}
+
+// PersistSessions saves current sessions to encrypted storage (if enabled).
+func (s *Server) PersistSessions() {
+	if s.sessionStore != nil {
+		s.sessions.persistSessions(s.sessionStore)
+	}
 }
 
 func (s *Server) registerRoutes() {
@@ -54,6 +119,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/conversations", s.requireSession(s.handleGetConversations))
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.requireSession(s.handleGetConversationDetail))
 	s.mux.HandleFunc("GET /api/conversations/{id}/members", s.requireSession(s.handleGetConversationMembers))
+	s.mux.HandleFunc("POST /api/conversations/{id}/leave", s.requireSession(s.handleLeaveConversation))
 	s.mux.HandleFunc("POST /api/messages/send", s.requireSession(s.handleSendMessage))
 	s.mux.HandleFunc("POST /api/messages/{convId}/{msgId}/read", s.requireSession(s.handleMarkAsRead))
 	s.mux.HandleFunc("GET /api/media", s.requireSession(s.handleGetMediaURL))

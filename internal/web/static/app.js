@@ -18,7 +18,7 @@ async function init() {
         if (resp.loggedIn) {
             state.loggedIn = true;
             state.phone = resp.phone;
-            state.userId = resp.userId;
+            state.userId = (resp.userId || '').toLowerCase();
             showChatView();
             loadConversations();
             connectSSE();
@@ -88,10 +88,47 @@ async function logout() {
 // ─── Conversations ───────────────────────────────────────────────────────────
 async function loadConversations() {
     try {
-        const resp = await api('/api/conversations?limit=50');
-        state.conversations = (resp.conversations || []).sort(
-            (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
-        );
+        // Fetch all conversations by paginating until no more are returned.
+        // The Garmin API returns up to `limit` per request; we keep fetching
+        // older pages until we get fewer than the page size.
+        let allConversations = [];
+        let oldestDate = null;
+        const pageSize = 200;
+
+        while (true) {
+            let url = `/api/conversations?limit=${pageSize}`;
+            if (oldestDate) {
+                // Fetch conversations updated before the oldest we've seen
+                url += `&beforeDate=${encodeURIComponent(oldestDate)}`;
+            }
+            const resp = await api(url);
+            const page = resp.conversations || [];
+            if (page.length === 0) break;
+
+            allConversations = allConversations.concat(page);
+
+            // Find the oldest updatedDate in this page for next pagination
+            const dates = page.map(c => new Date(c.updatedDate).getTime()).filter(d => !isNaN(d));
+            if (dates.length > 0) {
+                const minDate = new Date(Math.min(...dates));
+                oldestDate = minDate.toISOString();
+            }
+
+            // If we got fewer than the page size, we've reached the end
+            if (page.length < pageSize) break;
+        }
+
+        // Deduplicate by conversationId (in case of overlap between pages)
+        const seen = new Set();
+        state.conversations = [];
+        for (const conv of allConversations) {
+            if (!seen.has(conv.conversationId)) {
+                seen.add(conv.conversationId);
+                state.conversations.push(conv);
+            }
+        }
+        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
+
         // Load members for each conversation
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
@@ -108,9 +145,14 @@ async function loadMembers(convId) {
         const members = await api(`/api/conversations/${convId}/members`);
         state.members[convId] = members;
         for (const m of members) {
-            const key = m.userIdentifier || m.address;
-            if (key && m.friendlyName) {
-                state.memberNames[key] = m.friendlyName;
+            const name = m.friendlyName || m.address || '';
+            if (!name) continue;
+            // Store by both UUID (lowercased) and phone number for reliable lookup
+            if (m.userIdentifier) {
+                state.memberNames[m.userIdentifier.toLowerCase()] = name;
+            }
+            if (m.address) {
+                state.memberNames[m.address] = name;
             }
         }
         renderConversations();
@@ -161,6 +203,24 @@ function deselectConversation() {
     renderConversations();
 }
 
+async function leaveConversation(convId) {
+    if (!confirm('Leave this conversation? It will be removed from your list.')) return;
+
+    try {
+        await api(`/api/conversations/${convId}/leave`, { method: 'POST' });
+        // Remove from local state
+        state.conversations = state.conversations.filter(c => c.conversationId !== convId);
+        delete state.members[convId];
+        if (state.currentConversationId === convId) {
+            deselectConversation();
+        }
+        renderConversations();
+    } catch (e) {
+        console.error('Failed to leave conversation:', e);
+        alert('Failed to leave conversation: ' + e.message);
+    }
+}
+
 // ─── Messages ────────────────────────────────────────────────────────────────
 async function sendMessage() {
     const input = document.getElementById('message-input');
@@ -168,25 +228,30 @@ async function sendMessage() {
     if (!body || !state.currentConversationId) return;
 
     // Use phone numbers (member.address) for recipients, not Hermes UUIDs.
-    // The Garmin API matches conversations by phone number; sending UUIDs
-    // creates a new conversation instead of using the existing one.
     const to = getRecipientPhones(state.currentConversationId);
     if (to.length === 0) {
         console.error('No recipient phone numbers found — members may not be loaded yet');
         return;
     }
 
+    const convId = state.currentConversationId;
     input.value = '';
     input.focus();
 
+    // Show message immediately BEFORE the API call
+    const tempId = 'sending-' + Date.now();
+    addOptimisticMessage(convId, tempId, body, 'sending');
+
     try {
-        await api('/api/messages/send', {
+        const result = await api('/api/messages/send', {
             method: 'POST',
-            body: { conversationId: state.currentConversationId, to, body }
+            body: { conversationId: convId, to, body }
         });
+        // Replace temp message with real one from server
+        replaceOptimisticMessage(convId, tempId, result.messageId, 'sent');
     } catch (e) {
         console.error('Failed to send message:', e);
-        input.value = body;
+        markOptimisticFailed(tempId, e.message || 'Send failed');
     }
 }
 
@@ -209,6 +274,60 @@ function getRecipientPhones(convId) {
         }
     }
     return phones;
+}
+
+// Add an optimistic message to the current conversation view immediately.
+// sendState: 'sending' | 'sent' | 'failed'
+function addOptimisticMessage(convId, messageId, body, sendState) {
+    if (state.currentConversationId !== convId) return;
+    if (state.messages.find(m => m.messageId === messageId)) return;
+    state.messages.push({
+        messageId: messageId,
+        conversationId: convId,
+        from: state.userId,
+        messageBody: body,
+        sentAt: new Date().toISOString(),
+        status: [],
+        _sendState: sendState || 'sent',
+    });
+    renderMessages();
+    scrollToBottom();
+}
+
+// Replace a temporary optimistic message with the real server ID.
+function replaceOptimisticMessage(convId, tempId, realId, sendState) {
+    const msg = state.messages.find(m => m.messageId === tempId);
+    if (msg) {
+        msg.messageId = realId;
+        msg._sendState = sendState || 'sent';
+        renderMessages();
+    }
+}
+
+// Mark an optimistic message as failed.
+function markOptimisticFailed(tempId, errorMsg) {
+    const msg = state.messages.find(m => m.messageId === tempId);
+    if (msg) {
+        msg._sendState = 'failed';
+        msg._errorMsg = errorMsg;
+        renderMessages();
+    }
+}
+
+// Reload the current conversation messages from the server.
+async function reloadCurrentConversation() {
+    const convId = state.currentConversationId;
+    if (!convId) return;
+    try {
+        const resp = await api(`/api/conversations/${convId}?limit=50`);
+        state.messages = (resp.messages || []).sort(
+            (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+        );
+        renderMessages();
+        scrollToBottom();
+    } catch (e) {
+        console.error('Failed to reload conversation:', e);
+    }
 }
 
 function handleMessageKeydown(event) {
@@ -279,25 +398,31 @@ function getMediaProxyUrl(msg, convId) {
 
 async function sendMediaFile(file) {
     if (!state.currentConversationId) return;
-    const to = getRecipientPhones(state.currentConversationId);
+    const convId = state.currentConversationId;
+    const to = getRecipientPhones(convId);
     if (to.length === 0) {
         console.error('No recipient phone numbers found');
         return;
     }
 
+    const tempId = 'sending-media-' + Date.now();
+    const label = file.type.startsWith('image/') ? 'Sending image...' : 'Sending audio...';
+    addOptimisticMessage(convId, tempId, label, 'sending');
+
     const form = new FormData();
     form.append('file', file);
     form.append('to', JSON.stringify(to));
-    form.append('conversationId', state.currentConversationId);
+    form.append('conversationId', convId);
 
     try {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        console.log('Media sent:', data);
+        // Reload conversation to get the full message with media URLs
+        reloadCurrentConversation();
     } catch (e) {
         console.error('Failed to send media:', e);
-        alert('Failed to send media: ' + e.message);
+        markOptimisticFailed(tempId, e.message || 'Failed to send media');
     }
 }
 
@@ -521,25 +646,40 @@ function renderMessages() {
 
         const isSent = isMine(msg);
         const cls = isSent ? 'sent' : 'received';
+        const sendState = msg._sendState || '';
+        const failedCls = sendState === 'failed' ? ' message-failed' : '';
+        const sendingCls = sendState === 'sending' ? ' message-sending' : '';
         const senderName = !isSent ? getSenderName(msg) : null;
         const body = getMessageBody(msg);
         const time = formatMessageTime(msg.sentAt || msg.receivedAt);
-        const statusIcon = isSent ? getStatusIcon(msg) : '';
         const location = getLocationHtml(msg);
         const device = getDeviceLabel(msg);
         const mediaHtml = getMediaPlaceholder(msg);
         const transcription = msg.transcription
             ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
 
+        let statusIcon = '';
+        if (sendState === 'sending') {
+            statusIcon = '...';
+        } else if (sendState === 'failed') {
+            statusIcon = '!';
+        } else if (isSent) {
+            statusIcon = getStatusIcon(msg);
+        }
+
+        const errorHtml = msg._errorMsg
+            ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
+
         html += `
-            <div class="message ${cls}">
+            <div class="message ${cls}${failedCls}${sendingCls}">
                 ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
                 <div class="message-bubble">${escapeHtml(body)}${mediaHtml}${location}${transcription}</div>
                 <div class="message-meta">
                     <span>${time}</span>
                     ${device ? `<span class="message-device">${device}</span>` : ''}
-                    ${statusIcon ? `<span class="message-status ${getStatusClass(msg)}">${statusIcon}</span>` : ''}
+                    ${statusIcon ? `<span class="message-status ${sendState === 'failed' ? 'failed' : getStatusClass(msg)}">${statusIcon}</span>` : ''}
                 </div>
+                ${errorHtml}
             </div>
         `;
     }
@@ -554,17 +694,20 @@ function renderMessages() {
 function getConversationName(conv) {
     const members = state.members[conv.conversationId] || [];
     const otherMembers = members.filter(m => {
-        const id = m.userIdentifier || m.address;
-        return id !== state.userId;
+        const id = (m.userIdentifier || '').toLowerCase();
+        const addr = m.address || '';
+        return id !== state.userId && addr !== state.phone;
     });
 
     if (otherMembers.length > 0) {
         return otherMembers.map(m => m.friendlyName || m.address || 'Unknown').join(', ');
     }
 
-    // Fallback: use member IDs
-    const otherIds = conv.memberIds.filter(id => id !== state.userId);
-    return otherIds.map(id => state.memberNames[id] || id.substring(0, 8) + '...').join(', ');
+    // Fallback: use member IDs, lookup name by lowercase UUID
+    const otherIds = conv.memberIds.filter(id => id.toLowerCase() !== state.userId);
+    return otherIds.map(id => {
+        return state.memberNames[id] || state.memberNames[id.toLowerCase()] || id.substring(0, 8) + '...';
+    }).join(', ');
 }
 
 function updateConversationTitle(convId) {
@@ -585,7 +728,10 @@ function isMine(msg) {
 function getSenderName(msg) {
     const from = msg.from;
     if (!from) return null;
-    return state.memberNames[from] || from;
+    // Try exact match, then lowercase (UUIDs from API may differ in case)
+    return state.memberNames[from]
+        || state.memberNames[from.toLowerCase()]
+        || from;
 }
 
 function getMessageBody(msg) {

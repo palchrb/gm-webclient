@@ -1,6 +1,6 @@
 FROM golang:1-alpine3.23 AS builder
 
-RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev
+RUN apk add --no-cache git ca-certificates build-base
 
 WORKDIR /build
 
@@ -9,30 +9,15 @@ RUN go mod download
 
 COPY . .
 
-# Re-apply replace in case go.mod was overwritten by COPY . .
-RUN go mod edit -replace github.com/slush-dev/garmin-messenger=/garmin-messenger/lib/go
-
-# Robust fix:
-#  - Remove possible CRLF line endings
-#  - Ensure executable bit
-#  - Execute build script
-RUN sed -i 's/\r$//' ./build.sh \
- && chmod +x ./build.sh \
- && ./build.sh
+RUN go build -ldflags="-s -w" -o garmin-web ./cmd/garmin-web
 
 FROM alpine:3.23
 
-ENV UID=1337 \
-    GID=1337
+RUN apk add --no-cache ca-certificates ffmpeg
 
-RUN apk add --no-cache su-exec ca-certificates olm bash yq-go ffmpeg
-
-COPY --from=builder /build/matrix-garmin-messenger /usr/bin/matrix-garmin-messenger
-COPY --from=builder /build/docker-run.sh /docker-run.sh
-
-RUN sed -i 's/\r$//' /docker-run.sh \
- && chmod +x /docker-run.sh
+COPY --from=builder /build/garmin-web /usr/bin/garmin-web
 
 VOLUME /data
+EXPOSE 8080
 
-CMD ["/docker-run.sh"]
+CMD ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data"]
