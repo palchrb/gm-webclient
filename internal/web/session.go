@@ -46,7 +46,8 @@ type UserSession struct {
 	LastActivity      time.Time
 	mu                sync.Mutex
 	pushMu            sync.RWMutex
-	cancel            context.CancelFunc
+	signalRCancel     context.CancelFunc // controls SignalR lifecycle (paused when idle)
+	fcmCancel         context.CancelFunc // controls FCM lifecycle (runs until session expires)
 	signalRStarted    bool
 	fcmStarted        bool
 }
@@ -174,16 +175,20 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 }
 
 // StartFCM registers with Google FCM and starts the MCS listener for a session.
-// It runs in a goroutine and reconnects with exponential backoff on failure.
-func (sm *SessionManager) StartFCM(session *UserSession, ctx context.Context) {
+// FCM runs for the entire session lifetime (not tied to SSE/browser tabs)
+// so that Web Push notifications work even when the browser is closed.
+func (sm *SessionManager) StartFCM(session *UserSession) {
 	session.mu.Lock()
 	if session.fcmStarted || session.FCM == nil {
 		session.mu.Unlock()
 		return
 	}
 	session.fcmStarted = true
+	fcmCtx, cancel := context.WithCancel(context.Background())
+	session.fcmCancel = cancel
 	session.mu.Unlock()
 
+	ctx := fcmCtx
 	go func() {
 		phone := session.Phone
 
@@ -264,8 +269,11 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 
 	if ok {
 		session.SignalR.Stop()
-		if session.cancel != nil {
-			session.cancel()
+		if session.signalRCancel != nil {
+			session.signalRCancel()
+		}
+		if session.fcmCancel != nil {
+			session.fcmCancel()
 		}
 		sm.logger.Info("Session removed", "phone", session.Phone)
 	}
@@ -337,6 +345,10 @@ func generateSessionID() string {
 }
 
 // reaper periodically cleans up idle sessions.
+// Sessions with active SSE subscribers are never reaped.
+// Sessions without subscribers have their SignalR/FCM stopped after 30 min
+// (reconnected on next browser visit), but the session itself is kept alive
+// for the full configured TTL (sessionDays) so the user doesn't need to re-login.
 func (sm *SessionManager) reaper() {
 	ticker := time.NewTicker(reaperInterval)
 	defer ticker.Stop()
@@ -344,18 +356,40 @@ func (sm *SessionManager) reaper() {
 	for range ticker.C {
 		sm.mu.Lock()
 		now := time.Now()
+		sessionTTL := time.Duration(sm.sessionDays) * 24 * time.Hour
+
 		for id, session := range sm.sessions {
 			session.mu.Lock()
 			idle := now.Sub(session.LastActivity)
 			session.mu.Unlock()
 
-			if idle > sessionMaxIdle && session.SSE.SubscriberCount() == 0 {
-				sm.logger.Info("Reaping idle session", "phone", session.Phone, "idle", idle)
+			hasSubscribers := session.SSE.SubscriberCount() > 0
+
+			if idle > sessionTTL {
+				// Session expired — remove entirely (both SignalR and FCM)
+				sm.logger.Info("Session expired", "phone", session.Phone, "idle", idle)
 				session.SignalR.Stop()
-				if session.cancel != nil {
-					session.cancel()
+				if session.signalRCancel != nil {
+					session.signalRCancel()
+				}
+				if session.fcmCancel != nil {
+					session.fcmCancel()
 				}
 				delete(sm.sessions, id)
+			} else if idle > sessionMaxIdle && !hasSubscribers {
+				// No browser tabs open for 30 min — stop SignalR to save resources
+				// (it only feeds SSE which has no subscribers anyway).
+				// FCM keeps running for Web Push delivery.
+				if session.signalRStarted {
+					sm.logger.Debug("Pausing SignalR for idle session (FCM stays for push)", "phone", session.Phone, "idle", idle)
+					session.SignalR.Stop()
+					if session.signalRCancel != nil {
+						session.signalRCancel()
+					}
+					session.mu.Lock()
+					session.signalRStarted = false
+					session.mu.Unlock()
+				}
 			}
 		}
 

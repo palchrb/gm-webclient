@@ -106,7 +106,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Start SignalR and FCM on first SSE connection
 	s.ensureSignalR(session, r.Context())
-	s.sessions.StartFCM(session, r.Context())
+	s.sessions.StartFCM(session)
 
 	ch := session.SSE.Subscribe()
 	defer session.SSE.Unsubscribe(ch)
@@ -136,7 +136,7 @@ func (s *Server) ensureSignalR(session *UserSession, ctx context.Context) {
 	}
 
 	srCtx, cancel := context.WithCancel(context.Background())
-	session.cancel = cancel
+	session.signalRCancel = cancel
 
 	go func() {
 		s.logger.Info("Starting SignalR", "phone", session.Phone)
