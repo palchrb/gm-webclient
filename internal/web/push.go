@@ -99,7 +99,7 @@ func (s *PushSubscriptionStore) Save(phone string, subs map[string]*webpush.Subs
 }
 
 // sendWebPush sends a push notification to all of a session's push subscribers.
-func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
+func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 	if event.Type != "message" {
 		return
 	}
@@ -108,7 +108,7 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 	}
 
 	// Extract notification content from the message (skip own messages)
-	payload := buildPushPayload(event.Data, session.Phone)
+	payload := buildPushPayload(event.Data, acct.Phone)
 	if payload == nil {
 		return
 	}
@@ -117,14 +117,14 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 		return
 	}
 
-	session.pushMu.RLock()
-	subs := make([]*webpush.Subscription, 0, len(session.PushSubscriptions))
-	endpoints := make([]string, 0, len(session.PushSubscriptions))
-	for ep, sub := range session.PushSubscriptions {
+	acct.pushMu.RLock()
+	subs := make([]*webpush.Subscription, 0, len(acct.PushSubscriptions))
+	endpoints := make([]string, 0, len(acct.PushSubscriptions))
+	for ep, sub := range acct.PushSubscriptions {
 		subs = append(subs, sub)
 		endpoints = append(endpoints, ep)
 	}
-	session.pushMu.RUnlock()
+	acct.pushMu.RUnlock()
 
 	if len(subs) == 0 {
 		return
@@ -141,7 +141,7 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 			Urgency:         webpush.UrgencyHigh,
 		})
 		if err != nil {
-			srv.logger.Error("Web push send failed", "phone", session.Phone, "error", err)
+			srv.logger.Error("Web push send failed", "phone", acct.Phone, "error", err)
 			continue
 		}
 		resp.Body.Close()
@@ -153,14 +153,14 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 
 	// Clean up expired subscriptions
 	if len(expiredEndpoints) > 0 {
-		session.pushMu.Lock()
+		acct.pushMu.Lock()
 		for _, ep := range expiredEndpoints {
-			delete(session.PushSubscriptions, ep)
+			delete(acct.PushSubscriptions, ep)
 		}
-		session.pushMu.Unlock()
+		acct.pushMu.Unlock()
 
 		if srv.pushStore != nil {
-			srv.pushStore.Save(session.Phone, session.PushSubscriptions)
+			srv.pushStore.Save(acct.Phone, acct.PushSubscriptions)
 		}
 	}
 }
@@ -206,6 +206,7 @@ func (srv *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
+	acct := session.Account
 
 	var sub webpush.Subscription
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
@@ -217,18 +218,18 @@ func (srv *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session.pushMu.Lock()
-	if session.PushSubscriptions == nil {
-		session.PushSubscriptions = make(map[string]*webpush.Subscription)
+	acct.pushMu.Lock()
+	if acct.PushSubscriptions == nil {
+		acct.PushSubscriptions = make(map[string]*webpush.Subscription)
 	}
-	session.PushSubscriptions[sub.Endpoint] = &sub
-	session.pushMu.Unlock()
+	acct.PushSubscriptions[sub.Endpoint] = &sub
+	acct.pushMu.Unlock()
 
 	if srv.pushStore != nil {
-		srv.pushStore.Save(session.Phone, session.PushSubscriptions)
+		srv.pushStore.Save(acct.Phone, acct.PushSubscriptions)
 	}
 
-	srv.logger.Info("Push subscription added", "phone", session.Phone, "endpoint", sub.Endpoint[:min(50, len(sub.Endpoint))]+"...")
+	srv.logger.Info("Push subscription added", "phone", acct.Phone, "endpoint", sub.Endpoint[:min(50, len(sub.Endpoint))]+"...")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "subscribed"})
 }
 
@@ -239,6 +240,7 @@ func (srv *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
+	acct := session.Account
 
 	var req struct {
 		Endpoint string `json:"endpoint"`
@@ -248,12 +250,12 @@ func (srv *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	session.pushMu.Lock()
-	delete(session.PushSubscriptions, req.Endpoint)
-	session.pushMu.Unlock()
+	acct.pushMu.Lock()
+	delete(acct.PushSubscriptions, req.Endpoint)
+	acct.pushMu.Unlock()
 
 	if srv.pushStore != nil {
-		srv.pushStore.Save(session.Phone, session.PushSubscriptions)
+		srv.pushStore.Save(acct.Phone, acct.PushSubscriptions)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unsubscribed"})

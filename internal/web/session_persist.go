@@ -16,8 +16,6 @@ import (
 )
 
 // SessionStore handles encrypted persistence of session credentials.
-// Credentials are AES-256-GCM encrypted using a key derived from SESSION_KEY.
-// The file on disk is worthless without the key.
 type SessionStore struct {
 	dataDir string
 	gcm     cipher.AEAD
@@ -34,12 +32,8 @@ type persistedSession struct {
 	ExpiresAt    float64 `json:"expiresAt"`
 }
 
-// NewSessionStore creates a new encrypted session store.
-// sessionKey is the raw key string from the SESSION_KEY env var.
 func NewSessionStore(dataDir, sessionKey string, logger *slog.Logger) (*SessionStore, error) {
-	// Derive a 32-byte AES key from the user-provided key via SHA-256
 	hash := sha256.Sum256([]byte(sessionKey))
-
 	block, err := aes.NewCipher(hash[:])
 	if err != nil {
 		return nil, err
@@ -48,12 +42,7 @@ func NewSessionStore(dataDir, sessionKey string, logger *slog.Logger) (*SessionS
 	if err != nil {
 		return nil, err
 	}
-
-	return &SessionStore{
-		dataDir: dataDir,
-		gcm:     gcm,
-		logger:  logger,
-	}, nil
+	return &SessionStore{dataDir: dataDir, gcm: gcm, logger: logger}, nil
 }
 
 func (ss *SessionStore) path() string {
@@ -66,17 +55,17 @@ func (ss *SessionStore) Save(sessions map[string]*UserSession) {
 	for _, s := range sessions {
 		entries = append(entries, persistedSession{
 			SessionID:    s.ID,
-			Phone:        s.Phone,
-			AccessToken:  s.Auth.AccessToken,
-			RefreshToken: s.Auth.RefreshToken,
-			InstanceID:   s.Auth.InstanceID,
-			ExpiresAt:    s.Auth.ExpiresAt,
+			Phone:        s.Account.Phone,
+			AccessToken:  s.Account.Auth.AccessToken,
+			RefreshToken: s.Account.Auth.RefreshToken,
+			InstanceID:   s.Account.Auth.InstanceID,
+			ExpiresAt:    s.Account.Auth.ExpiresAt,
 		})
 	}
 
 	plaintext, err := json.Marshal(entries)
 	if err != nil {
-		ss.logger.Error("Failed to marshal sessions for persistence", "error", err)
+		ss.logger.Error("Failed to marshal sessions", "error", err)
 		return
 	}
 
@@ -97,16 +86,15 @@ func (ss *SessionStore) Save(sessions map[string]*UserSession) {
 	}
 }
 
-// Load decrypts and returns persisted sessions.
 func (ss *SessionStore) Load() []persistedSession {
 	data, err := os.ReadFile(ss.path())
 	if err != nil {
-		return nil // No saved sessions
+		return nil
 	}
 
 	nonceSize := ss.gcm.NonceSize()
 	if len(data) < nonceSize {
-		ss.logger.Warn("Encrypted session file too short, ignoring")
+		ss.logger.Warn("Encrypted session file too short")
 		return nil
 	}
 
@@ -122,16 +110,15 @@ func (ss *SessionStore) Load() []persistedSession {
 		ss.logger.Warn("Failed to parse decrypted sessions", "error", err)
 		return nil
 	}
-
 	return entries
 }
 
-// Delete removes the encrypted session file.
 func (ss *SessionStore) Delete() {
 	os.Remove(ss.path())
 }
 
 // RestoreSessions recreates sessions from encrypted storage.
+// Multiple sessions for the same phone share one account.
 func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logger) int {
 	entries := store.Load()
 	if len(entries) == 0 {
@@ -146,10 +133,9 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 		auth.InstanceID = entry.InstanceID
 		auth.ExpiresAt = entry.ExpiresAt
 
-		// Validate the session is still usable by refreshing if expired
 		if auth.TokenExpired() {
 			if err := auth.RefreshHermesToken(context.Background()); err != nil {
-				sm.logger.Warn("Restored session has expired tokens, skipping",
+				sm.logger.Warn("Restored session expired, skipping",
 					"phone", entry.Phone, "error", err)
 				continue
 			}
@@ -161,7 +147,7 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 			continue
 		}
 
-		// Swap to the original session ID so the browser cookie still works
+		// Swap to original session ID so browser cookie still works
 		sm.mu.Lock()
 		delete(sm.sessions, session.ID)
 		session.ID = entry.SessionID
@@ -175,7 +161,6 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 	return restored
 }
 
-// persistSessions saves current sessions to the encrypted store.
 func (sm *SessionManager) persistSessions(store *SessionStore) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

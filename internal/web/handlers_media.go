@@ -99,7 +99,7 @@ func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := session.API.SendMediaMessage(r.Context(), to, caption, converted, gmMediaType, opts...)
+	result, err := session.Account.API.SendMediaMessage(r.Context(), to, caption, converted, gmMediaType, opts...)
 	if err != nil {
 		handleAPIError(w, err, "send media message")
 		return
@@ -134,7 +134,7 @@ func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaType := gm.MediaType(r.URL.Query().Get("mediaType"))
 
-	data, err := session.API.DownloadMedia(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
+	data, err := session.Account.API.DownloadMedia(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
 	if err != nil {
 		handleAPIError(w, err, "download media")
 		return

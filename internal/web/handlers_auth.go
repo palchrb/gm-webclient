@@ -116,10 +116,14 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 
 	// Load persisted push subscriptions and wire push callback
 	if s.pushStore != nil {
-		session.PushSubscriptions = s.pushStore.Load(req.Phone)
+		session.Account.pushMu.Lock()
+		if session.Account.PushSubscriptions == nil {
+			session.Account.PushSubscriptions = s.pushStore.Load(req.Phone)
+		}
+		session.Account.pushMu.Unlock()
 	}
-	session.SSE.OnNoSubscribers(func(event SSEEvent) {
-		s.sendWebPush(session, event)
+	session.Account.SSE.OnNoSubscribers(func(event SSEEvent) {
+		s.sendWebPush(session.Account, event)
 	})
 
 	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
@@ -140,10 +144,11 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Touch()
-	userID := gm.PhoneToHermesUserID(session.Phone)
+	phone := session.Phone()
+	userID := gm.PhoneToHermesUserID(phone)
 	writeJSON(w, http.StatusOK, authStatusResponse{
 		LoggedIn: true,
-		Phone:    &session.Phone,
+		Phone:    &phone,
 		UserID:   &userID,
 	})
 }
