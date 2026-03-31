@@ -106,6 +106,14 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load persisted push subscriptions and wire push callback
+	if s.pushStore != nil {
+		session.PushSubscriptions = s.pushStore.Load(req.Phone)
+	}
+	session.SSE.OnNoSubscribers(func(event SSEEvent) {
+		s.sendWebPush(session, event)
+	})
+
 	SetSessionCookie(w, session.ID)
 
 	userID := gm.PhoneToHermesUserID(req.Phone)

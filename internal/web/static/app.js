@@ -22,6 +22,7 @@ async function init() {
             showChatView();
             loadConversations();
             connectSSE();
+            setupPushNotifications();
         }
     } catch (e) {
         // Not logged in, show login view
@@ -65,6 +66,7 @@ async function confirmOTP() {
         showChatView();
         loadConversations();
         connectSSE();
+        setupPushNotifications();
     } catch (e) {
         showError(e.message || 'Invalid code');
     } finally {
@@ -621,6 +623,50 @@ async function api(url, opts = {}) {
         throw new Error(data.error || `HTTP ${resp.status}`);
     }
     return data;
+}
+
+// ─── Push Notifications ──────────────────────────────────────────────────────
+async function setupPushNotifications() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.log('Push notifications not supported in this browser');
+        return;
+    }
+
+    try {
+        const registration = await navigator.serviceWorker.register('/sw.js');
+
+        const resp = await api('/api/push/vapid-key');
+        if (!resp.publicKey) return;
+
+        let subscription = await registration.pushManager.getSubscription();
+
+        if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(resp.publicKey)
+            });
+        }
+
+        await api('/api/push/subscribe', {
+            method: 'POST',
+            body: subscription.toJSON()
+        });
+
+        console.log('Push notifications enabled');
+    } catch (e) {
+        console.log('Push notification setup failed:', e.message);
+    }
+}
+
+function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    var rawData = window.atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
 }
 
 // ─── Start ───────────────────────────────────────────────────────────────────

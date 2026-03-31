@@ -16,8 +16,9 @@ type SSEEvent struct {
 
 // SSEBroker manages SSE subscribers for a single user session.
 type SSEBroker struct {
-	subscribers map[chan SSEEvent]struct{}
-	mu          sync.RWMutex
+	subscribers     map[chan SSEEvent]struct{}
+	onNoSubscribers func(SSEEvent) // called when publishing with zero subscribers
+	mu              sync.RWMutex
 }
 
 // NewSSEBroker creates a new SSE broker.
@@ -25,6 +26,12 @@ func NewSSEBroker() *SSEBroker {
 	return &SSEBroker{
 		subscribers: make(map[chan SSEEvent]struct{}),
 	}
+}
+
+// OnNoSubscribers sets a callback invoked when Publish is called
+// but there are no active SSE subscribers (e.g., all browser tabs closed).
+func (b *SSEBroker) OnNoSubscribers(fn func(SSEEvent)) {
+	b.onNoSubscribers = fn
 }
 
 // Subscribe creates a new subscriber channel.
@@ -47,7 +54,19 @@ func (b *SSEBroker) Unsubscribe(ch chan SSEEvent) {
 }
 
 // Publish sends an event to all subscribers.
+// If there are no subscribers and onNoSubscribers is set, it calls that instead.
 func (b *SSEBroker) Publish(event SSEEvent) {
+	b.mu.RLock()
+	count := len(b.subscribers)
+	b.mu.RUnlock()
+
+	if count == 0 {
+		if b.onNoSubscribers != nil {
+			b.onNoSubscribers(event)
+		}
+		return
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for ch := range b.subscribers {

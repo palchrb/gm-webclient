@@ -12,18 +12,28 @@ var staticFiles embed.FS
 
 // Server is the HTTP server for the Garmin Messenger web client.
 type Server struct {
-	sessions *SessionManager
-	logger   *slog.Logger
-	mux      *http.ServeMux
+	sessions  *SessionManager
+	vapidKeys *VAPIDKeys
+	pushStore *PushSubscriptionStore
+	logger    *slog.Logger
+	mux       *http.ServeMux
 }
 
 // NewServer creates a new web server.
-// fcmDataDir is the directory for FCM credential persistence (empty to disable FCM).
-func NewServer(logger *slog.Logger, fcmDataDir string) *Server {
+// dataDir is the base directory for persistent data (FCM creds, VAPID keys, push subscriptions).
+// Empty disables FCM and push.
+func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys) *Server {
+	var pushStore *PushSubscriptionStore
+	if dataDir != "" {
+		pushStore = NewPushSubscriptionStore(dataDir)
+	}
+
 	s := &Server{
-		sessions: NewSessionManager(logger, fcmDataDir),
-		logger:   logger,
-		mux:      http.NewServeMux(),
+		sessions:  NewSessionManager(logger, dataDir),
+		vapidKeys: vapidKeys,
+		pushStore: pushStore,
+		logger:    logger,
+		mux:       http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -48,6 +58,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/messages/{convId}/{msgId}/read", s.requireSession(s.handleMarkAsRead))
 	s.mux.HandleFunc("GET /api/media", s.requireSession(s.handleGetMediaURL))
 	s.mux.HandleFunc("POST /api/chat/new", s.requireSession(s.handleNewChat))
+
+	// Push notification endpoints
+	s.mux.HandleFunc("GET /api/push/vapid-key", s.handleGetVAPIDKey)
+	s.mux.HandleFunc("POST /api/push/subscribe", s.requireSession(s.handlePushSubscribe))
+	s.mux.HandleFunc("DELETE /api/push/subscribe", s.requireSession(s.handlePushUnsubscribe))
 
 	// SSE events (session required)
 	s.mux.HandleFunc("GET /api/events", s.requireSession(s.handleSSE))

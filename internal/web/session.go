@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"github.com/yourusername/matrix-garmin-messenger/internal/hermes/fcm"
 )
@@ -31,18 +32,20 @@ const sessionContextKey contextKey = "session"
 
 // UserSession represents a logged-in user's session.
 type UserSession struct {
-	ID             string
-	Phone          string
-	Auth           *gm.HermesAuth
-	API            *gm.HermesAPI
-	SignalR        *gm.HermesSignalR
-	FCM            *fcm.Client
-	SSE            *SSEBroker
-	LastActivity   time.Time
-	mu             sync.Mutex
-	cancel         context.CancelFunc
-	signalRStarted bool
-	fcmStarted     bool
+	ID                string
+	Phone             string
+	Auth              *gm.HermesAuth
+	API               *gm.HermesAPI
+	SignalR           *gm.HermesSignalR
+	FCM               *fcm.Client
+	SSE               *SSEBroker
+	PushSubscriptions map[string]*webpush.Subscription
+	LastActivity      time.Time
+	mu                sync.Mutex
+	pushMu            sync.RWMutex
+	cancel            context.CancelFunc
+	signalRStarted    bool
+	fcmStarted        bool
 }
 
 // Touch updates the last activity time.
@@ -98,7 +101,7 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	// credentials for Google's push system, not Garmin auth tokens.
 	var fcmClient *fcm.Client
 	if sm.fcmDataDir != "" {
-		fcmSessionDir := filepath.Join(sm.fcmDataDir, phone)
+		fcmSessionDir := filepath.Join(sm.fcmDataDir, "fcm", phone)
 		fcmClient = fcm.NewClient(fcmSessionDir,
 			fcm.WithLogger(logger.With("component", "fcm", "phone", phone)),
 		)
