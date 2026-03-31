@@ -337,6 +337,10 @@ func generateSessionID() string {
 }
 
 // reaper periodically cleans up idle sessions.
+// Sessions with active SSE subscribers are never reaped.
+// Sessions without subscribers have their SignalR/FCM stopped after 30 min
+// (reconnected on next browser visit), but the session itself is kept alive
+// for the full configured TTL (sessionDays) so the user doesn't need to re-login.
 func (sm *SessionManager) reaper() {
 	ticker := time.NewTicker(reaperInterval)
 	defer ticker.Stop()
@@ -344,18 +348,37 @@ func (sm *SessionManager) reaper() {
 	for range ticker.C {
 		sm.mu.Lock()
 		now := time.Now()
+		sessionTTL := time.Duration(sm.sessionDays) * 24 * time.Hour
+
 		for id, session := range sm.sessions {
 			session.mu.Lock()
 			idle := now.Sub(session.LastActivity)
 			session.mu.Unlock()
 
-			if idle > sessionMaxIdle && session.SSE.SubscriberCount() == 0 {
-				sm.logger.Info("Reaping idle session", "phone", session.Phone, "idle", idle)
+			hasSubscribers := session.SSE.SubscriberCount() > 0
+
+			if idle > sessionTTL {
+				// Session expired — remove entirely
+				sm.logger.Info("Session expired", "phone", session.Phone, "idle", idle)
 				session.SignalR.Stop()
 				if session.cancel != nil {
 					session.cancel()
 				}
 				delete(sm.sessions, id)
+			} else if idle > sessionMaxIdle && !hasSubscribers {
+				// No browser tabs open for 30 min — stop SignalR/FCM to save resources,
+				// but keep the session so the cookie still works on next visit.
+				if session.signalRStarted {
+					sm.logger.Debug("Pausing SignalR for idle session", "phone", session.Phone, "idle", idle)
+					session.SignalR.Stop()
+					if session.cancel != nil {
+						session.cancel()
+					}
+					session.mu.Lock()
+					session.signalRStarted = false
+					session.fcmStarted = false
+					session.mu.Unlock()
+				}
 			}
 		}
 
