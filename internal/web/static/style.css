@@ -423,6 +423,21 @@ body {
 }
 
 .message-status.read { color: var(--accent-light); }
+.message-status.failed { color: var(--error); font-weight: 600; }
+
+.message-sending .message-bubble { opacity: 0.7; }
+
+.message-failed .message-bubble {
+    border: 1px solid var(--error);
+    opacity: 0.8;
+}
+
+.message-error {
+    font-size: 11px;
+    color: var(--error);
+    margin-top: 2px;
+    padding: 0 4px;
+}
 
 .message-location {
     margin-top: 4px;

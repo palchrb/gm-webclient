@@ -72,6 +72,12 @@ func main() {
 		log.Printf("Session TTL: %d days", days)
 	}
 
+	// Encrypted session persistence (opt-in via SESSION_KEY)
+	if sessionKey := os.Getenv("SESSION_KEY"); sessionKey != "" {
+		opts = append(opts, web.WithSessionKey(sessionKey))
+		log.Printf("Encrypted session persistence enabled")
+	}
+
 	srv := web.NewServer(logger, *dataDir, vapidKeys, opts...)
 	log.Printf("Garmin Messenger Web listening on %s", *addr)
 	if err := srv.ListenAndServe(*addr); err != nil {

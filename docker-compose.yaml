@@ -17,6 +17,11 @@ services:
       - PHONE_WHITELIST=${PHONE_WHITELIST:-}
       # How many days a login session stays valid (default: 7)
       - SESSION_DAYS=${SESSION_DAYS:-7}
+      # Set a secret key to persist sessions across Docker restarts.
+      # Sessions are AES-256-GCM encrypted on disk — the file is useless without this key.
+      # Leave empty to keep sessions in memory only (re-login required after restart).
+      # Example: SESSION_KEY=my-secret-key-change-me
+      - SESSION_KEY=${SESSION_KEY:-}
     command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
     # Volume stores FCM credentials only (Google device IDs for push).
     # Garmin auth tokens are NOT stored on disk.

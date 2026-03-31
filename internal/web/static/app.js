@@ -228,8 +228,6 @@ async function sendMessage() {
     if (!body || !state.currentConversationId) return;
 
     // Use phone numbers (member.address) for recipients, not Hermes UUIDs.
-    // The Garmin API matches conversations by phone number; sending UUIDs
-    // creates a new conversation instead of using the existing one.
     const to = getRecipientPhones(state.currentConversationId);
     if (to.length === 0) {
         console.error('No recipient phone numbers found — members may not be loaded yet');
@@ -240,16 +238,20 @@ async function sendMessage() {
     input.value = '';
     input.focus();
 
+    // Show message immediately BEFORE the API call
+    const tempId = 'sending-' + Date.now();
+    addOptimisticMessage(convId, tempId, body, 'sending');
+
     try {
         const result = await api('/api/messages/send', {
             method: 'POST',
             body: { conversationId: convId, to, body }
         });
-        // Optimistically add sent message to UI immediately
-        addOptimisticMessage(convId, result.messageId, body);
+        // Replace temp message with real one from server
+        replaceOptimisticMessage(convId, tempId, result.messageId, 'sent');
     } catch (e) {
         console.error('Failed to send message:', e);
-        input.value = body;
+        markOptimisticFailed(tempId, e.message || 'Send failed');
     }
 }
 
@@ -275,9 +277,9 @@ function getRecipientPhones(convId) {
 }
 
 // Add an optimistic message to the current conversation view immediately.
-function addOptimisticMessage(convId, messageId, body) {
+// sendState: 'sending' | 'sent' | 'failed'
+function addOptimisticMessage(convId, messageId, body, sendState) {
     if (state.currentConversationId !== convId) return;
-    // Avoid duplicate if SSE already delivered it
     if (state.messages.find(m => m.messageId === messageId)) return;
     state.messages.push({
         messageId: messageId,
@@ -286,9 +288,30 @@ function addOptimisticMessage(convId, messageId, body) {
         messageBody: body,
         sentAt: new Date().toISOString(),
         status: [],
+        _sendState: sendState || 'sent',
     });
     renderMessages();
     scrollToBottom();
+}
+
+// Replace a temporary optimistic message with the real server ID.
+function replaceOptimisticMessage(convId, tempId, realId, sendState) {
+    const msg = state.messages.find(m => m.messageId === tempId);
+    if (msg) {
+        msg.messageId = realId;
+        msg._sendState = sendState || 'sent';
+        renderMessages();
+    }
+}
+
+// Mark an optimistic message as failed.
+function markOptimisticFailed(tempId, errorMsg) {
+    const msg = state.messages.find(m => m.messageId === tempId);
+    if (msg) {
+        msg._sendState = 'failed';
+        msg._errorMsg = errorMsg;
+        renderMessages();
+    }
 }
 
 // Reload the current conversation messages from the server.
@@ -382,9 +405,9 @@ async function sendMediaFile(file) {
         return;
     }
 
-    // Show optimistic "sending..." message
-    const tempId = 'temp-' + Date.now();
-    addOptimisticMessage(convId, tempId, file.type.startsWith('image/') ? '(sending image...)' : '(sending audio...)');
+    const tempId = 'sending-media-' + Date.now();
+    const label = file.type.startsWith('image/') ? 'Sending image...' : 'Sending audio...';
+    addOptimisticMessage(convId, tempId, label, 'sending');
 
     const form = new FormData();
     form.append('file', file);
@@ -395,14 +418,11 @@ async function sendMediaFile(file) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Reload conversation to get the full message with media details
+        // Reload conversation to get the full message with media URLs
         reloadCurrentConversation();
     } catch (e) {
         console.error('Failed to send media:', e);
-        alert('Failed to send media: ' + e.message);
-        // Remove optimistic message on failure
-        state.messages = state.messages.filter(m => m.messageId !== tempId);
-        renderMessages();
+        markOptimisticFailed(tempId, e.message || 'Failed to send media');
     }
 }
 
@@ -626,25 +646,40 @@ function renderMessages() {
 
         const isSent = isMine(msg);
         const cls = isSent ? 'sent' : 'received';
+        const sendState = msg._sendState || '';
+        const failedCls = sendState === 'failed' ? ' message-failed' : '';
+        const sendingCls = sendState === 'sending' ? ' message-sending' : '';
         const senderName = !isSent ? getSenderName(msg) : null;
         const body = getMessageBody(msg);
         const time = formatMessageTime(msg.sentAt || msg.receivedAt);
-        const statusIcon = isSent ? getStatusIcon(msg) : '';
         const location = getLocationHtml(msg);
         const device = getDeviceLabel(msg);
         const mediaHtml = getMediaPlaceholder(msg);
         const transcription = msg.transcription
             ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
 
+        let statusIcon = '';
+        if (sendState === 'sending') {
+            statusIcon = '...';
+        } else if (sendState === 'failed') {
+            statusIcon = '!';
+        } else if (isSent) {
+            statusIcon = getStatusIcon(msg);
+        }
+
+        const errorHtml = msg._errorMsg
+            ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
+
         html += `
-            <div class="message ${cls}">
+            <div class="message ${cls}${failedCls}${sendingCls}">
                 ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
                 <div class="message-bubble">${escapeHtml(body)}${mediaHtml}${location}${transcription}</div>
                 <div class="message-meta">
                     <span>${time}</span>
                     ${device ? `<span class="message-device">${device}</span>` : ''}
-                    ${statusIcon ? `<span class="message-status ${getStatusClass(msg)}">${statusIcon}</span>` : ''}
+                    ${statusIcon ? `<span class="message-status ${sendState === 'failed' ? 'failed' : getStatusClass(msg)}">${statusIcon}</span>` : ''}
                 </div>
+                ${errorHtml}
             </div>
         `;
     }

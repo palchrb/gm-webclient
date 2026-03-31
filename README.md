@@ -129,6 +129,15 @@ docker run -p 8080:8080 -v garmin-web-data:/data garmin-web
 | `-log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `-phone-whitelist` | (empty) | Comma-separated list of phone numbers allowed to log in (e.g. `+4712345678,+4787654321`). Also available as `PHONE_WHITELIST` env var. Empty allows all. |
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `PHONE_WHITELIST` | (empty) | Comma-separated phone numbers allowed to log in |
+| `SESSION_DAYS` | `7` | How many days a login session stays valid |
+| `SESSION_KEY` | (empty) | Secret key for encrypted session persistence. When set, sessions survive Docker restarts. Auth credentials are AES-256-GCM encrypted on disk — the file is useless without this key. Leave empty for memory-only sessions. |
+
 ## Architecture
 
 ```

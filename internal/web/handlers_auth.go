@@ -123,6 +123,7 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+	s.PersistSessions()
 
 	userID := gm.PhoneToHermesUserID(req.Phone)
 	writeJSON(w, http.StatusOK, authStatusResponse{
@@ -151,6 +152,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 	if session != nil {
 		s.sessions.RemoveSession(session.ID)
+		s.PersistSessions()
 	}
 	ClearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
