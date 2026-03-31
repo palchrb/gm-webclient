@@ -167,12 +167,14 @@ async function sendMessage() {
     const body = input.value.trim();
     if (!body || !state.currentConversationId) return;
 
-    // Get recipients from conversation members
-    const conv = state.conversations.find(c => c.conversationId === state.currentConversationId);
-    if (!conv) return;
-
-    const to = conv.memberIds.filter(id => id !== state.userId);
-    if (to.length === 0) return;
+    // Use phone numbers (member.address) for recipients, not Hermes UUIDs.
+    // The Garmin API matches conversations by phone number; sending UUIDs
+    // creates a new conversation instead of using the existing one.
+    const to = getRecipientPhones(state.currentConversationId);
+    if (to.length === 0) {
+        console.error('No recipient phone numbers found — members may not be loaded yet');
+        return;
+    }
 
     input.value = '';
     input.focus();
@@ -186,6 +188,27 @@ async function sendMessage() {
         console.error('Failed to send message:', e);
         input.value = body;
     }
+}
+
+// Get recipient phone numbers (addresses) for a conversation, excluding ourselves.
+function getRecipientPhones(convId) {
+    const members = state.members[convId] || [];
+    const phones = [];
+    for (const m of members) {
+        const addr = m.address || '';
+        const id = m.userIdentifier || '';
+        // Skip ourselves
+        if (id === state.userId || addr === state.phone) continue;
+        if (addr) phones.push(addr);
+    }
+    // Fallback: if members aren't loaded yet, use memberIds (UUIDs) from conversation
+    if (phones.length === 0) {
+        const conv = state.conversations.find(c => c.conversationId === convId);
+        if (conv) {
+            return conv.memberIds.filter(id => id !== state.userId);
+        }
+    }
+    return phones;
 }
 
 function handleMessageKeydown(event) {
@@ -242,22 +265,131 @@ async function startNewChat() {
 }
 
 // ─── Media ───────────────────────────────────────────────────────────────────
-async function getMediaUrl(msg, convId) {
+function getMediaProxyUrl(msg, convId) {
     if (!msg.mediaId || !msg.uuid) return null;
-    try {
-        const params = new URLSearchParams({
-            uuid: msg.uuid,
-            mediaId: msg.mediaId,
-            messageId: msg.messageId,
-            conversationId: convId,
-            mediaType: msg.mediaType || 'ImageAvif',
-        });
-        const result = await api(`/api/media?${params}`);
-        return result.downloadUrl;
-    } catch (e) {
-        console.error('Failed to get media URL:', e);
-        return null;
+    const params = new URLSearchParams({
+        uuid: msg.uuid,
+        mediaId: msg.mediaId,
+        messageId: msg.messageId,
+        conversationId: convId,
+        mediaType: msg.mediaType || 'ImageAvif',
+    });
+    return `/api/media/proxy?${params}`;
+}
+
+async function sendMediaFile(file) {
+    if (!state.currentConversationId) return;
+    const to = getRecipientPhones(state.currentConversationId);
+    if (to.length === 0) {
+        console.error('No recipient phone numbers found');
+        return;
     }
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('to', JSON.stringify(to));
+    form.append('conversationId', state.currentConversationId);
+
+    try {
+        const resp = await fetch('/api/media/send', { method: 'POST', body: form });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        console.log('Media sent:', data);
+    } catch (e) {
+        console.error('Failed to send media:', e);
+        alert('Failed to send media: ' + e.message);
+    }
+}
+
+function handleFileSelect() {
+    const input = document.getElementById('file-input');
+    if (input.files.length > 0) {
+        sendMediaFile(input.files[0]);
+        input.value = '';
+    }
+}
+
+// ─── Audio Recording ────────────────────────────────────────────────────────
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartTime = 0;
+let recordingTimer = null;
+
+async function toggleRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        stopRecording();
+        return;
+    }
+    startRecording();
+}
+
+async function startRecording() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Prefer webm/opus which ffmpeg can easily convert to OGG
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : 'audio/webm';
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+            stream.getTracks().forEach(t => t.stop());
+            clearInterval(recordingTimer);
+            const blob = new Blob(audioChunks, { type: mimeType });
+            const file = new File([blob], 'voice.webm', { type: mimeType });
+            sendMediaFile(file);
+            updateRecordingUI(false);
+        };
+
+        mediaRecorder.start();
+        recordingStartTime = Date.now();
+        updateRecordingUI(true);
+        recordingTimer = setInterval(updateRecordingDuration, 100);
+
+        // Auto-stop after 30 seconds (Garmin limit)
+        setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                stopRecording();
+            }
+        }, 30000);
+    } catch (e) {
+        console.error('Microphone access denied:', e);
+        alert('Microphone access is required for voice messages');
+    }
+}
+
+function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+    }
+}
+
+function updateRecordingUI(recording) {
+    const btn = document.getElementById('record-btn');
+    const duration = document.getElementById('recording-duration');
+    if (recording) {
+        btn.classList.add('recording');
+        btn.innerHTML = '&#9632;'; // stop square
+        duration.classList.remove('hidden');
+    } else {
+        btn.classList.remove('recording');
+        btn.innerHTML = '&#127908;'; // microphone
+        duration.classList.add('hidden');
+        duration.textContent = '';
+    }
+}
+
+function updateRecordingDuration() {
+    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    const el = document.getElementById('recording-duration');
+    if (el) el.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
@@ -443,9 +575,10 @@ function updateConversationTitle(convId) {
 }
 
 function isMine(msg) {
-    if (msg.from === state.userId) return true;
-    if (msg.from === state.phone) return true;
-    if (msg.fromInstanceId) return true; // Messages with fromInstanceId are from our app
+    if (!msg.from) return false;
+    const from = msg.from.toLowerCase();
+    if (from === state.userId) return true;
+    if (from === state.phone) return true;
     return false;
 }
 
@@ -488,7 +621,7 @@ function getMediaPlaceholder(msg) {
     return '';
 }
 
-async function loadMediaForMessages() {
+function loadMediaForMessages() {
     const convId = state.currentConversationId;
     if (!convId) return;
 
@@ -498,17 +631,13 @@ async function loadMediaForMessages() {
         if (!el || el.dataset.loaded) continue;
         el.dataset.loaded = 'true';
 
-        try {
-            const url = await getMediaUrl(msg, convId);
-            if (!url) continue;
+        const url = getMediaProxyUrl(msg, convId);
+        if (!url) continue;
 
-            if (msg.mediaType === 'ImageAvif') {
-                el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
-            } else if (msg.mediaType === 'AudioOgg') {
-                el.innerHTML = `<audio class="message-audio" controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Your browser does not support audio.</audio>`;
-            }
-        } catch (e) {
-            el.innerHTML = '<span style="color:var(--error);font-size:12px">Failed to load media</span>';
+        if (msg.mediaType === 'ImageAvif') {
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
+        } else if (msg.mediaType === 'AudioOgg') {
+            el.innerHTML = `<audio controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Your browser does not support audio.</audio>`;
         }
     }
 }

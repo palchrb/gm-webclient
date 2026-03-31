@@ -79,6 +79,10 @@
                     </div>
                     <div id="messages" class="messages"></div>
                     <div class="composer">
+                        <input type="file" id="file-input" class="hidden" accept="image/jpeg,image/png,image/webp,image/avif,audio/ogg,audio/mpeg,audio/mp4,audio/wav,audio/webm" onchange="handleFileSelect()">
+                        <button class="composer-btn" onclick="document.getElementById('file-input').click()" title="Send image or audio file">&#128206;</button>
+                        <button id="record-btn" class="composer-btn" onclick="toggleRecording()" title="Record voice message">&#127908;</button>
+                        <span id="recording-duration" class="recording-duration hidden"></span>
                         <input type="text" id="message-input" placeholder="Type a message..." onkeydown="handleMessageKeydown(event)">
                         <button id="send-btn" onclick="sendMessage()">&#9654;</button>
                     </div>

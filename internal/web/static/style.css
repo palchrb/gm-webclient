@@ -432,9 +432,10 @@ body {
     gap: 8px;
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
+    align-items: center;
 }
 
-.composer input {
+.composer input[type="text"] {
     flex: 1;
     padding: 10px 16px;
     border: 1px solid var(--border);
@@ -445,9 +446,9 @@ body {
     outline: none;
 }
 
-.composer input:focus { border-color: var(--accent); }
+.composer input[type="text"]:focus { border-color: var(--accent); }
 
-.composer button {
+#send-btn {
     width: 40px;
     height: 40px;
     border: none;
@@ -459,10 +460,51 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
 }
 
-.composer button:hover { background: var(--accent-light); }
-.composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+#send-btn:hover { background: var(--accent-light); }
+#send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.composer-btn {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+
+.composer-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+}
+
+.composer-btn.recording {
+    background: var(--error);
+    color: white;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.recording-duration {
+    font-size: 13px;
+    color: var(--error);
+    font-weight: 600;
+    min-width: 36px;
+    font-variant-numeric: tabular-nums;
+}
 
 /* ─── Modal ─── */
 .modal {

@@ -103,11 +103,23 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logger.Debug("Sending message",
+		"to", req.To,
+		"conversationId", req.ConversationID,
+		"bodyLen", len(req.Body),
+	)
+
 	result, err := session.API.SendMessage(r.Context(), req.To, req.Body)
 	if err != nil {
 		handleAPIError(w, err, "send message")
 		return
 	}
+
+	s.logger.Debug("Message sent",
+		"messageId", result.MessageID,
+		"conversationId", result.ConversationID,
+	)
+
 	writeJSON(w, http.StatusOK, result)
 }
 
