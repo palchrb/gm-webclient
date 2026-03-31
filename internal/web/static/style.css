@@ -660,6 +660,26 @@ body {
 .message:hover .react-btn { opacity: 1; }
 .react-btn:hover { color: var(--text); }
 
+.reaction-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+    padding: 0 4px;
+}
+
+.reaction-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1px 6px;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
 .reaction-picker {
     display: flex;
     gap: 2px;
@@ -675,6 +695,23 @@ body {
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
+.reaction-picker-full {
+    flex-wrap: wrap;
+    max-width: 320px;
+    max-height: 200px;
+    overflow-y: auto;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+.composer-emoji-picker {
+    bottom: auto;
+    top: auto;
+    bottom: 100%;
+    left: 0;
+    right: auto;
+}
+
 .message.received .reaction-picker { left: 0; right: auto; }
 
 .reaction-emoji {
@@ -684,9 +721,16 @@ body {
     cursor: pointer;
     padding: 2px 4px;
     border-radius: 4px;
+    flex-shrink: 0;
 }
 
 .reaction-emoji:hover { background: var(--bg-hover); }
+
+.reaction-more {
+    font-size: 14px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
 
 .message-text {
     margin-top: 2px;

@@ -56,10 +56,28 @@ async function init() {
             loadConversations();
             connectSSE();
             setupPushNotifications();
+            setupClipboardPaste();
         }
     } catch (e) {
         // Not logged in, show login view
     }
+}
+
+// Paste images from clipboard directly into the composer
+function setupClipboardPaste() {
+    document.addEventListener('paste', (e) => {
+        if (!state.currentConversationId) return;
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (file) stageMediaPreview(file);
+                return;
+            }
+        }
+    });
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
@@ -198,7 +216,7 @@ async function selectConversation(convId) {
     }
 
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=50`);
+        const resp = await api(`/api/conversations/${convId}?limit=200`);
         state.messages = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
@@ -347,14 +365,23 @@ function markOptimisticFailed(tempId, errorMsg) {
 }
 
 // Reload the current conversation messages from the server.
-async function reloadCurrentConversation() {
+// Preserves optimistic (sending/sent) messages that aren't in the server response yet.
+async function reloadCurrentConversation(delayMs) {
+    if (delayMs) await new Promise(r => setTimeout(r, delayMs));
     const convId = state.currentConversationId;
     if (!convId) return;
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=50`);
-        state.messages = (resp.messages || []).sort(
+        const resp = await api(`/api/conversations/${convId}?limit=200`);
+        const serverMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
+        // Keep optimistic messages that the server doesn't know about yet
+        const serverIds = new Set(serverMsgs.map(m => m.messageId));
+        const optimistic = state.messages.filter(m =>
+            m._sendState && !serverIds.has(m.messageId)
+        );
+        state.messages = [...serverMsgs, ...optimistic];
+        cache.set('msgs_' + convId, serverMsgs);
         renderMessages();
         scrollToBottom();
     } catch (e) {
@@ -498,8 +525,10 @@ async function sendMediaFile(file, caption) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Reload conversation to get the full message with media URLs
-        reloadCurrentConversation();
+        // Reload after delay to let Garmin propagate the message.
+        // First reload quickly, retry after longer delay if message not visible yet.
+        reloadCurrentConversation(1000);
+        reloadCurrentConversation(4000);
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -730,6 +759,19 @@ function renderConversations() {
     }).join('');
 }
 
+// Detect Garmin ZWS-encoded reaction: \u200b{emoji}\u200b to \u200a{text}\u200a
+function isReactionMessage(msg) {
+    const body = msg.messageBody || '';
+    return body.startsWith('\u200b');
+}
+
+function extractReaction(msg) {
+    const body = msg.messageBody || '';
+    const match = body.match(/^\u200b(.+?)\u200b to \u200a(.*?)\u200a$/);
+    if (!match) return null;
+    return { emoji: match[1], targetText: match[2] };
+}
+
 function renderMessages() {
     const container = document.getElementById('messages');
     if (state.messages.length === 0) {
@@ -737,10 +779,44 @@ function renderMessages() {
         return;
     }
 
+    // First pass: collect reactions and map them to target messages.
+    // Garmin matches reactions by quoted body text to the most recent message.
+    const reactions = {}; // messageId -> [{emoji, from}]
+    const reactionMsgIds = new Set();
+
+    for (const msg of state.messages) {
+        if (!isReactionMessage(msg)) continue;
+        const r = extractReaction(msg);
+        if (!r) continue;
+        reactionMsgIds.add(msg.messageId);
+        // Find target: most recent message whose body matches r.targetText
+        let target = null;
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+            const candidate = state.messages[i];
+            if (candidate.messageId === msg.messageId) continue;
+            const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
+            if (candidateBody === r.targetText) {
+                target = candidate;
+                break;
+            }
+        }
+        if (target) {
+            if (!reactions[target.messageId]) reactions[target.messageId] = [];
+            reactions[target.messageId].push({
+                emoji: r.emoji,
+                from: msg.from,
+                isMine: isMine(msg),
+            });
+        }
+    }
+
+    // Second pass: render messages, skipping reaction messages
     let html = '';
     let lastDate = '';
 
     for (const msg of state.messages) {
+        if (reactionMsgIds.has(msg.messageId)) continue; // skip reaction messages
+
         const date = formatDate(msg.sentAt || msg.receivedAt);
         if (date !== lastDate) {
             html += `<div class="message-time-separator">${date}</div>`;
@@ -773,10 +849,26 @@ function renderMessages() {
         const errorHtml = msg._errorMsg
             ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
 
+        // Render reaction badges
+        const msgReactions = reactions[msg.messageId] || [];
+        let reactionsHtml = '';
+        if (msgReactions.length > 0) {
+            // Group by emoji and count
+            const counts = {};
+            for (const r of msgReactions) {
+                counts[r.emoji] = (counts[r.emoji] || 0) + 1;
+            }
+            const badges = Object.entries(counts).map(([emoji, count]) =>
+                `<span class="reaction-badge">${emoji}${count > 1 ? ' ' + count : ''}</span>`
+            ).join('');
+            reactionsHtml = `<div class="reaction-badges">${badges}</div>`;
+        }
+
         html += `
             <div class="message ${cls}${failedCls}${sendingCls}">
                 ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
                 <div class="message-bubble">${mediaHtml}${body ? `<div class="message-text">${escapeHtml(body)}</div>` : ''}${location}${transcription}</div>
+                ${reactionsHtml}
                 <div class="message-meta">
                     <span>${time}</span>
                     ${device ? `<span class="message-device">${device}</span>` : ''}
@@ -1159,33 +1251,86 @@ async function api(url, opts = {}) {
     return data;
 }
 
-// ─── Reactions ──────────────────────────────────────────────────────────────
-const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+// ─── Reactions & Emoji Picker ────────────────────────────────────────────────
+const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+const ALL_EMOJIS = [
+    '😀','😃','😄','😁','😆','😅','🤣','😂','🙂','😊','😇','🥰','😍','🤩',
+    '😘','😗','😚','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐',
+    '🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴',
+    '😷','🤒','🤕','🤢','🤮','🥵','🥶','🥴','😵','🤯','🤠','🥳','🥸','😎',
+    '🤓','🧐','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰',
+    '😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠',
+    '🤬','👿','💀','💩','🤡','👹','👺','👻','👽','👾','🤖','😺','😸','😹',
+    '😻','😼','😽','🙀','😿','😾','👋','🤚','🖐','✋','🖖','👌','🤌','🤏',
+    '✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊',
+    '🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','💪','🦾','❤️','🧡','💛','💚',
+    '💙','💜','🤎','🖤','🤍','💯','💢','💥','💫','💦','🔥','⭐','🌟','✨',
+    '🎉','🎊','🏆','🏅','🥇','🥈','🥉','⚽','🎯','🎮','🎵','🎶','🔔',
+];
 
 function showReactionPicker(messageId) {
-    // Remove any existing picker
-    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+    closeAllPickers();
+    const btn = event.target;
+    const msgEl = btn.closest('.message');
+    if (!msgEl) return;
 
-    const msgEl = document.querySelector(`[data-msg-id="${messageId}"]`);
-    if (!msgEl) {
-        // Fallback: find by react button
-        const btn = event.target;
-        const picker = document.createElement('div');
-        picker.className = 'reaction-picker';
-        picker.innerHTML = REACTION_EMOJIS.map(e =>
-            `<button class="reaction-emoji" onclick="sendReaction('${messageId}', '${e}')">${e}</button>`
-        ).join('');
-        btn.closest('.message').appendChild(picker);
-        // Auto-close on click outside
-        setTimeout(() => document.addEventListener('click', function close(ev) {
-            if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); }
-        }), 0);
-        return;
-    }
+    const picker = document.createElement('div');
+    picker.className = 'reaction-picker';
+    picker.innerHTML = QUICK_EMOJIS.map(e =>
+        `<button class="reaction-emoji" onclick="sendReaction('${messageId}', '${e}')">${e}</button>`
+    ).join('') + `<button class="reaction-emoji reaction-more" onclick="showFullEmojiPicker('${messageId}', this)">+</button>`;
+    msgEl.appendChild(picker);
+    autoClosePicker(picker);
+}
+
+function showFullEmojiPicker(messageId, btn) {
+    closeAllPickers();
+    const msgEl = btn.closest('.message');
+    if (!msgEl) return;
+
+    const picker = document.createElement('div');
+    picker.className = 'reaction-picker reaction-picker-full';
+    picker.innerHTML = ALL_EMOJIS.map(e =>
+        `<button class="reaction-emoji" onclick="sendReaction('${messageId}', '${e}')">${e}</button>`
+    ).join('');
+    msgEl.appendChild(picker);
+    autoClosePicker(picker);
+}
+
+// Emoji picker for the composer (insert emoji into message input)
+function showComposerEmojiPicker() {
+    closeAllPickers();
+    const composer = document.querySelector('.composer');
+    const picker = document.createElement('div');
+    picker.className = 'reaction-picker reaction-picker-full composer-emoji-picker';
+    picker.innerHTML = ALL_EMOJIS.map(e =>
+        `<button class="reaction-emoji" onclick="insertComposerEmoji('${e}')">${e}</button>`
+    ).join('');
+    composer.appendChild(picker);
+    autoClosePicker(picker);
+}
+
+function insertComposerEmoji(emoji) {
+    closeAllPickers();
+    const input = document.getElementById('message-input');
+    const pos = input.selectionStart || input.value.length;
+    input.value = input.value.slice(0, pos) + emoji + input.value.slice(pos);
+    input.focus();
+    input.selectionStart = input.selectionEnd = pos + emoji.length;
+}
+
+function closeAllPickers() {
+    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+}
+
+function autoClosePicker(picker) {
+    setTimeout(() => document.addEventListener('click', function close(ev) {
+        if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); }
+    }), 0);
 }
 
 async function sendReaction(messageId, emoji) {
-    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+    closeAllPickers();
 
     const msg = state.messages.find(m => m.messageId === messageId);
     if (!msg) return;
@@ -1205,6 +1350,9 @@ async function sendReaction(messageId, emoji) {
                 targetBody,
             }
         });
+        // Reload to show the reaction as a badge on the target message
+        reloadCurrentConversation(1000);
+        reloadCurrentConversation(4000);
     } catch (e) {
         console.error('Failed to send reaction:', e);
     }
