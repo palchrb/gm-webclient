@@ -11,21 +11,21 @@
     <div id="login-view" class="login-view">
         <div class="login-card">
             <h1>Garmin Messenger</h1>
-            <p class="login-subtitle">Log inn med telefonnummer</p>
+            <p class="login-subtitle">Sign in with your phone number</p>
 
             <div id="phone-step">
-                <input type="tel" id="phone-input" placeholder="+47 xxx xx xxx" autocomplete="tel">
-                <button id="request-otp-btn" onclick="requestOTP()">Send kode</button>
+                <input type="tel" id="phone-input" placeholder="+1 234 567 8900" autocomplete="tel">
+                <button id="request-otp-btn" onclick="requestOTP()">Send code</button>
             </div>
 
             <div id="otp-step" class="hidden">
-                <p class="otp-info">Kode sendt til <span id="otp-phone"></span></p>
-                <input type="text" id="otp-input" placeholder="6-sifret kode" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-                <button id="confirm-otp-btn" onclick="confirmOTP()">Bekreft</button>
+                <p class="otp-info">Code sent to <span id="otp-phone"></span></p>
+                <input type="text" id="otp-input" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+                <button id="confirm-otp-btn" onclick="confirmOTP()">Confirm</button>
             </div>
 
             <div id="login-error" class="error hidden"></div>
-            <div id="login-loading" class="loading hidden">Venter...</div>
+            <div id="login-loading" class="loading hidden">Please wait...</div>
         </div>
     </div>
 
@@ -36,7 +36,7 @@
             <h1>Garmin Messenger</h1>
             <div class="header-right">
                 <span id="user-phone" class="user-phone"></span>
-                <button class="logout-btn" onclick="logout()">Logg ut</button>
+                <button class="logout-btn" onclick="logout()">Log out</button>
             </div>
         </header>
 
@@ -44,22 +44,22 @@
             <!-- Sidebar -->
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar-header">
-                    <h2>Samtaler</h2>
-                    <button class="new-chat-btn" onclick="showNewChatDialog()" title="Ny samtale">+</button>
+                    <h2>Chats</h2>
+                    <button class="new-chat-btn" onclick="showNewChatDialog()" title="New chat">+</button>
                 </div>
                 <div id="conversation-list" class="conversation-list">
-                    <div class="loading">Laster samtaler...</div>
+                    <div class="loading">Loading chats...</div>
                 </div>
             </aside>
 
             <!-- New Chat Dialog -->
             <div id="new-chat-dialog" class="modal hidden">
                 <div class="modal-content">
-                    <h3>Ny samtale</h3>
-                    <input type="tel" id="new-chat-phone" placeholder="+47 xxx xx xxx">
-                    <input type="text" id="new-chat-message" placeholder="Melding...">
+                    <h3>New chat</h3>
+                    <input type="tel" id="new-chat-phone" placeholder="+1 234 567 8900">
+                    <input type="text" id="new-chat-message" placeholder="Message...">
                     <div class="modal-actions">
-                        <button class="btn-secondary" onclick="hideNewChatDialog()">Avbryt</button>
+                        <button class="btn-secondary" onclick="hideNewChatDialog()">Cancel</button>
                         <button class="btn-primary" onclick="startNewChat()">Send</button>
                     </div>
                     <div id="new-chat-error" class="error hidden"></div>
@@ -69,7 +69,7 @@
             <!-- Message Area -->
             <main id="message-area" class="message-area">
                 <div id="no-conversation" class="empty-state">
-                    <p>Velg en samtale for a starte</p>
+                    <p>Select a conversation to start</p>
                 </div>
 
                 <div id="conversation-view" class="conversation-view hidden">
@@ -79,7 +79,7 @@
                     </div>
                     <div id="messages" class="messages"></div>
                     <div class="composer">
-                        <input type="text" id="message-input" placeholder="Skriv en melding..." onkeydown="handleMessageKeydown(event)">
+                        <input type="text" id="message-input" placeholder="Type a message..." onkeydown="handleMessageKeydown(event)">
                         <button id="send-btn" onclick="sendMessage()">&#9654;</button>
                     </div>
                 </div>

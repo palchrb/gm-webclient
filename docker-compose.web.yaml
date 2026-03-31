@@ -9,7 +9,13 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    # No volumes needed - server stores nothing on disk.
+    volumes:
+      - garmin-web-data:/data
+    # Volume stores FCM credentials only (Google device IDs for push).
+    # Garmin auth tokens are NOT stored on disk.
+
+volumes:
+  garmin-web-data:
     # Proxy via Caddy/nginx for HTTPS:
     #   messenger.example.com {
     #       reverse_proxy garmin-web:8080

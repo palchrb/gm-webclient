@@ -6,16 +6,23 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
+	"github.com/yourusername/matrix-garmin-messenger/internal/hermes/fcm"
 )
 
 const (
 	sessionCookieName = "garmin_session"
 	sessionMaxIdle    = 30 * time.Minute
 	reaperInterval    = 5 * time.Minute
+
+	// FCM reconnect backoff parameters
+	fcmInitialBackoff = 5 * time.Second
+	fcmMaxBackoff     = 5 * time.Minute
 )
 
 type contextKey string
@@ -24,16 +31,18 @@ const sessionContextKey contextKey = "session"
 
 // UserSession represents a logged-in user's session.
 type UserSession struct {
-	ID           string
-	Phone        string
-	Auth         *gm.HermesAuth
-	API          *gm.HermesAPI
-	SignalR      *gm.HermesSignalR
-	SSE          *SSEBroker
-	LastActivity time.Time
-	mu           sync.Mutex
-	cancel       context.CancelFunc
+	ID             string
+	Phone          string
+	Auth           *gm.HermesAuth
+	API            *gm.HermesAPI
+	SignalR        *gm.HermesSignalR
+	FCM            *fcm.Client
+	SSE            *SSEBroker
+	LastActivity   time.Time
+	mu             sync.Mutex
+	cancel         context.CancelFunc
 	signalRStarted bool
+	fcmStarted     bool
 }
 
 // Touch updates the last activity time.
@@ -54,15 +63,17 @@ type PendingOTP struct {
 type SessionManager struct {
 	sessions   map[string]*UserSession
 	pendingOTP map[string]*PendingOTP // keyed by phone number
+	fcmDataDir string                 // base dir for FCM credential persistence
 	mu         sync.RWMutex
 	logger     *slog.Logger
 }
 
 // NewSessionManager creates a new session manager and starts the reaper.
-func NewSessionManager(logger *slog.Logger) *SessionManager {
+func NewSessionManager(logger *slog.Logger, fcmDataDir string) *SessionManager {
 	sm := &SessionManager{
 		sessions:   make(map[string]*UserSession),
 		pendingOTP: make(map[string]*PendingOTP),
+		fcmDataDir: fcmDataDir,
 		logger:     logger,
 	}
 	go sm.reaper()
@@ -81,12 +92,25 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	api := gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
 	sr := gm.NewHermesSignalR(auth, gm.WithSignalRLogger(hermesLogger))
 
+	// Create FCM client with persistent storage per phone number.
+	// FCM credentials (androidId, securityToken) persist across restarts
+	// to avoid Google's registration rate limits. These are device-level
+	// credentials for Google's push system, not Garmin auth tokens.
+	var fcmClient *fcm.Client
+	if sm.fcmDataDir != "" {
+		fcmSessionDir := filepath.Join(sm.fcmDataDir, phone)
+		fcmClient = fcm.NewClient(fcmSessionDir,
+			fcm.WithLogger(logger.With("component", "fcm", "phone", phone)),
+		)
+	}
+
 	session := &UserSession{
 		ID:           sessionID,
 		Phone:        phone,
 		Auth:         auth,
 		API:          api,
 		SignalR:      sr,
+		FCM:          fcmClient,
 		SSE:          NewSSEBroker(),
 		LastActivity: time.Now(),
 	}
@@ -114,12 +138,92 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 		session.SSE.Publish(SSEEvent{Type: "disconnected", Data: nil})
 	})
 
+	// Wire FCM events to SSE broker (same events, additional delivery path)
+	if fcmClient != nil {
+		fcmClient.OnMessage(func(msg fcm.NewMessage) {
+			session.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
+		})
+		fcmClient.OnConnected(func() {
+			sm.logger.Debug("FCM connected", "phone", phone)
+		})
+		fcmClient.OnDisconnected(func() {
+			sm.logger.Debug("FCM disconnected", "phone", phone)
+		})
+		fcmClient.OnError(func(err error) {
+			sm.logger.Error("FCM error", "phone", phone, "error", err)
+		})
+	}
+
 	sm.mu.Lock()
 	sm.sessions[sessionID] = session
 	sm.mu.Unlock()
 
 	sm.logger.Info("Session created", "phone", phone, "sessionId", sessionID[:8]+"...")
 	return session, nil
+}
+
+// StartFCM registers with Google FCM and starts the MCS listener for a session.
+// It runs in a goroutine and reconnects with exponential backoff on failure.
+func (sm *SessionManager) StartFCM(session *UserSession, ctx context.Context) {
+	session.mu.Lock()
+	if session.fcmStarted || session.FCM == nil {
+		session.mu.Unlock()
+		return
+	}
+	session.fcmStarted = true
+	session.mu.Unlock()
+
+	go func() {
+		phone := session.Phone
+
+		// Step 1: Register with Google FCM
+		fcmToken, err := session.FCM.Register(ctx)
+		if err != nil {
+			sm.logger.Error("FCM registration failed", "phone", phone, "error", err)
+			session.mu.Lock()
+			session.fcmStarted = false
+			session.mu.Unlock()
+			return
+		}
+
+		// Step 2: Register FCM token with Garmin's backend
+		if err := session.Auth.UpdatePnsHandle(ctx, fcmToken); err != nil {
+			sm.logger.Warn("Failed to register FCM token with Garmin", "phone", phone, "error", err)
+			// Continue anyway — SignalR still works as primary delivery
+		} else {
+			sm.logger.Info("FCM token registered with Garmin", "phone", phone)
+		}
+
+		// Step 3: Listen with exponential backoff reconnect
+		backoff := fcmInitialBackoff
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			sm.logger.Info("Starting FCM listener", "phone", phone)
+			err := session.FCM.Listen(ctx)
+			if ctx.Err() != nil {
+				return // Context cancelled, clean shutdown
+			}
+
+			sm.logger.Warn("FCM listener disconnected, will reconnect",
+				"phone", phone, "error", err, "backoff", backoff)
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			backoff *= 2
+			if backoff > fcmMaxBackoff {
+				backoff = fcmMaxBackoff
+			}
+		}
+	}()
 }
 
 // GetSession returns a session by ID.
@@ -249,4 +353,9 @@ func (sm *SessionManager) reaper() {
 		}
 		sm.mu.Unlock()
 	}
+}
+
+// ensureFCMDataDir creates the FCM data directory if it doesn't exist.
+func ensureFCMDataDir(dir string) error {
+	return os.MkdirAll(dir, 0o755)
 }

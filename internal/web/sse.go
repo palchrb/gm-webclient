@@ -85,8 +85,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	// Start SignalR on first SSE connection
+	// Start SignalR and FCM on first SSE connection
 	s.ensureSignalR(session, r.Context())
+	s.sessions.StartFCM(session, r.Context())
 
 	ch := session.SSE.Subscribe()
 	defer session.SSE.Unsubscribe(ch)

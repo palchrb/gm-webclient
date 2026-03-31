@@ -43,7 +43,7 @@ async function requestOTP() {
         document.getElementById('otp-phone').textContent = phone;
         document.getElementById('otp-input').focus();
     } catch (e) {
-        showError(e.message || 'Kunne ikke sende kode');
+        showError(e.message || 'Could not send code');
     } finally {
         setLoading(false);
     }
@@ -66,7 +66,7 @@ async function confirmOTP() {
         loadConversations();
         connectSSE();
     } catch (e) {
-        showError(e.message || 'Ugyldig kode');
+        showError(e.message || 'Invalid code');
     } finally {
         setLoading(false);
     }
@@ -220,7 +220,7 @@ async function startNewChat() {
     const body = document.getElementById('new-chat-message').value.trim();
 
     if (!phone || !body) {
-        document.getElementById('new-chat-error').textContent = 'Fyll ut telefonnummer og melding';
+        document.getElementById('new-chat-error').textContent = 'Please enter a phone number and message';
         document.getElementById('new-chat-error').classList.remove('hidden');
         return;
     }
@@ -234,7 +234,7 @@ async function startNewChat() {
             selectConversation(result.conversationId);
         }
     } catch (e) {
-        document.getElementById('new-chat-error').textContent = e.message || 'Kunne ikke starte samtale';
+        document.getElementById('new-chat-error').textContent = e.message || 'Could not start conversation';
         document.getElementById('new-chat-error').classList.remove('hidden');
     }
 }
@@ -346,7 +346,7 @@ function handleStatusUpdate(update) {
 function renderConversations() {
     const list = document.getElementById('conversation-list');
     if (state.conversations.length === 0) {
-        list.innerHTML = '<div class="empty-state" style="height:200px">Ingen samtaler</div>';
+        list.innerHTML = '<div class="empty-state" style="height:200px">No conversations</div>';
         return;
     }
 
@@ -371,7 +371,7 @@ function renderConversations() {
 function renderMessages() {
     const container = document.getElementById('messages');
     if (state.messages.length === 0) {
-        container.innerHTML = '<div class="empty-state">Ingen meldinger</div>';
+        container.innerHTML = '<div class="empty-state">No messages</div>';
         return;
     }
 
@@ -425,7 +425,7 @@ function getConversationName(conv) {
     });
 
     if (otherMembers.length > 0) {
-        return otherMembers.map(m => m.friendlyName || m.address || 'Ukjent').join(', ');
+        return otherMembers.map(m => m.friendlyName || m.address || 'Unknown').join(', ');
     }
 
     // Fallback: use member IDs
@@ -460,7 +460,7 @@ function getMessageBody(msg) {
     if (msg.transcription) {
         body = (body ? body + ' ' : '') + '🎤 ' + msg.transcription;
     }
-    return body || '(ingen tekst)';
+    return body || '(no text)';
 }
 
 function getLocationHtml(msg) {
@@ -478,10 +478,10 @@ function getMediaPlaceholder(msg) {
     if (!msg.mediaId) return '';
     const msgId = msg.messageId;
     if (msg.mediaType === 'ImageAvif') {
-        return `<div class="message-image-container" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Laster bilde...</span></div>`;
+        return `<div class="message-image-container" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Loading image...</span></div>`;
     }
     if (msg.mediaType === 'AudioOgg') {
-        return `<div class="message-audio" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Laster lyd...</span></div>`;
+        return `<div class="message-audio" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Loading audio...</span></div>`;
     }
     return '';
 }
@@ -501,12 +501,12 @@ async function loadMediaForMessages() {
             if (!url) continue;
 
             if (msg.mediaType === 'ImageAvif') {
-                el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Bilde" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
+                el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
             } else if (msg.mediaType === 'AudioOgg') {
-                el.innerHTML = `<audio class="message-audio" controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Nettleseren stotter ikke lyd.</audio>`;
+                el.innerHTML = `<audio class="message-audio" controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Your browser does not support audio.</audio>`;
             }
         } catch (e) {
-            el.innerHTML = '<span style="color:var(--error);font-size:12px">Kunne ikke laste media</span>';
+            el.innerHTML = '<span style="color:var(--error);font-size:12px">Failed to load media</span>';
         }
     }
 }
@@ -556,10 +556,10 @@ function formatDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     const now = new Date();
-    if (d.toDateString() === now.toDateString()) return 'I dag';
+    if (d.toDateString() === now.toDateString()) return 'Today';
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) return 'I gar';
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
     return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
 }
 

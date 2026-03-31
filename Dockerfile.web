@@ -17,6 +17,7 @@ RUN apk add --no-cache ca-certificates
 
 COPY --from=builder /build/garmin-web /usr/bin/garmin-web
 
+VOLUME /data
 EXPOSE 8080
 
-CMD ["/usr/bin/garmin-web", "-addr", ":8080"]
+CMD ["/usr/bin/garmin-web", "-addr", ":8080", "-fcm-data-dir", "/data/fcm"]

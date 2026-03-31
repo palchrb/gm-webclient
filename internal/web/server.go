@@ -18,9 +18,10 @@ type Server struct {
 }
 
 // NewServer creates a new web server.
-func NewServer(logger *slog.Logger) *Server {
+// fcmDataDir is the directory for FCM credential persistence (empty to disable FCM).
+func NewServer(logger *slog.Logger, fcmDataDir string) *Server {
 	s := &Server{
-		sessions: NewSessionManager(logger),
+		sessions: NewSessionManager(logger, fcmDataDir),
 		logger:   logger,
 		mux:      http.NewServeMux(),
 	}

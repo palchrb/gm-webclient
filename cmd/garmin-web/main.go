@@ -11,6 +11,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
+	fcmDataDir := flag.String("fcm-data-dir", "", "Directory for FCM credential persistence (enables FCM push; empty to disable)")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	flag.Parse()
 
@@ -28,7 +29,11 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
-	srv := web.NewServer(logger)
+	if *fcmDataDir != "" {
+		log.Printf("FCM push enabled, data dir: %s", *fcmDataDir)
+	}
+
+	srv := web.NewServer(logger, *fcmDataDir)
 	log.Printf("Garmin Messenger Web listening on %s", *addr)
 	if err := srv.ListenAndServe(*addr); err != nil {
 		log.Fatal(err)
