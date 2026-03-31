@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -13,44 +12,18 @@ import (
 func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 
-	var opts []gm.GetConversationsOption
-
-	limit := 200
+	limit := 500
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil {
 			limit = l
 		}
 	}
-	opts = append(opts, gm.WithLimit(limit))
 
-	if beforeStr := r.URL.Query().Get("beforeDate"); beforeStr != "" {
-		if t, err := time.Parse(time.RFC3339, beforeStr); err == nil {
-			opts = append(opts, gm.WithAfterDate(time.Time{}))
-			// The Garmin API uses AfterDate for filtering, but to paginate
-			// backwards we fetch all and filter server-side below.
-			_ = t
-		}
-	}
-
-	result, err := session.API.GetConversations(r.Context(), opts...)
+	result, err := session.API.GetConversations(r.Context(), gm.WithLimit(limit))
 	if err != nil {
 		handleAPIError(w, err, "get conversations")
 		return
 	}
-
-	// Server-side filtering for beforeDate pagination
-	if beforeStr := r.URL.Query().Get("beforeDate"); beforeStr != "" {
-		if before, err := time.Parse(time.RFC3339, beforeStr); err == nil {
-			filtered := make([]gm.ConversationMetaModel, 0, len(result.Conversations))
-			for _, c := range result.Conversations {
-				if c.UpdatedDate.Before(before) {
-					filtered = append(filtered, c)
-				}
-			}
-			result.Conversations = filtered
-		}
-	}
-
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -222,6 +195,36 @@ func (s *Server) handleLeaveConversation(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
+}
+
+func (s *Server) handleSendReaction(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+
+	var req struct {
+		ConversationID string   `json:"conversationId"`
+		To             []string `json:"to"`
+		Emoji          string   `json:"emoji"`
+		TargetBody     string   `json:"targetBody"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Emoji == "" || len(req.To) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "emoji and to are required"})
+		return
+	}
+
+	// Build ZWS-encoded reaction body matching Garmin native app format
+	body := "\u200b" + req.Emoji + "\u200b to \u200a" + req.TargetBody + "\u200a"
+
+	result, err := session.API.SendMessage(r.Context(), req.To, body)
+	if err != nil {
+		handleAPIError(w, err, "send reaction")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
