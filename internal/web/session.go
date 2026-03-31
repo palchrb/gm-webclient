@@ -18,8 +18,8 @@ import (
 
 const (
 	sessionCookieName = "garmin_session"
-	sessionMaxIdle    = 30 * time.Minute
-	reaperInterval    = 5 * time.Minute
+	sessionMaxIdle    = 2 * time.Minute // pause SignalR quickly when no browser is listening
+	reaperInterval    = 30 * time.Second
 
 	// FCM reconnect backoff parameters
 	fcmInitialBackoff = 5 * time.Second
