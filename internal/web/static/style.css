@@ -477,6 +477,7 @@ body {
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     align-items: center;
+    position: relative;
 }
 
 .composer input[type="text"] {
@@ -716,11 +717,12 @@ body {
 }
 
 .composer-emoji-picker {
-    bottom: auto;
-    top: auto;
     bottom: 100%;
     left: 0;
-    right: auto;
+    right: 0;
+    margin-bottom: 8px;
+    max-width: none;
+    max-height: 250px;
 }
 
 .message.received .reaction-picker { left: 0; right: auto; }
