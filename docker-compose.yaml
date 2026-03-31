@@ -22,7 +22,7 @@ services:
       # Leave empty to keep sessions in memory only (re-login required after restart).
       # Example: SESSION_KEY=my-secret-key-change-me
       - SESSION_KEY=${SESSION_KEY:-}
-    command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
+    command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data"]
     # Volume stores FCM credentials only (Google device IDs for push).
     # Garmin auth tokens are NOT stored on disk.
 
