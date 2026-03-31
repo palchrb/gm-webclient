@@ -623,9 +623,78 @@ body {
     margin-top: 4px;
 }
 
-.message-audio audio {
-    max-width: 250px;
-    height: 36px;
+/* ─── Waveform Audio Player ─── */
+.waveform-player {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px;
+    min-width: 200px;
+    max-width: 280px;
+}
+
+.waveform-play-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    color: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    letter-spacing: -2px;
+}
+
+.message.received .waveform-play-btn {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.waveform-play-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.waveform-bars {
+    display: flex;
+    align-items: center;
+    gap: 1.5px;
+    height: 32px;
+    flex: 1;
+    cursor: pointer;
+}
+
+.waveform-bar {
+    flex: 1;
+    min-width: 2px;
+    max-width: 4px;
+    background: rgba(255, 255, 255, 0.35);
+    border-radius: 1px;
+    transition: background 0.1s;
+}
+
+.message.received .waveform-bar {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.waveform-bar.active {
+    background: rgba(255, 255, 255, 0.85);
+}
+
+.message.received .waveform-bar.active {
+    background: var(--accent-light);
+}
+
+.waveform-time {
+    font-size: 11px;
+    color: inherit;
+    opacity: 0.7;
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
 }
 
 .message-transcription {

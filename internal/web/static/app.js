@@ -449,6 +449,27 @@ async function toggleRecording() {
 }
 
 async function startRecording() {
+    // Check secure context (getUserMedia requires HTTPS or localhost)
+    if (!window.isSecureContext) {
+        alert('Voice recording requires HTTPS. Please access this site via HTTPS or localhost.');
+        return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('Your browser does not support audio recording.');
+        return;
+    }
+
+    // Check existing permission state before prompting
+    try {
+        const permStatus = await navigator.permissions.query({ name: 'microphone' });
+        if (permStatus.state === 'denied') {
+            alert('Microphone access is blocked. Please allow microphone access in your browser settings and reload.');
+            return;
+        }
+    } catch (e) {
+        // permissions API not supported, proceed anyway
+    }
+
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         // Prefer webm/opus which ffmpeg can easily convert to OGG
@@ -483,8 +504,14 @@ async function startRecording() {
             }
         }, 30000);
     } catch (e) {
-        console.error('Microphone access denied:', e);
-        alert('Microphone access is required for voice messages');
+        console.error('Microphone access error:', e);
+        if (e.name === 'NotAllowedError') {
+            alert('Microphone access was denied. Please allow microphone access in your browser and try again.');
+        } else if (e.name === 'NotFoundError') {
+            alert('No microphone found. Please connect a microphone and try again.');
+        } else {
+            alert('Could not access microphone: ' + e.message);
+        }
     }
 }
 
@@ -703,8 +730,22 @@ function getConversationName(conv) {
         return otherMembers.map(m => m.friendlyName || m.address || 'Unknown').join(', ');
     }
 
+    // Self-chat: all members are us — show our own name/number
+    if (members.length > 0) {
+        const me = members.find(m => {
+            const id = (m.userIdentifier || '').toLowerCase();
+            return id === state.userId || m.address === state.phone;
+        });
+        if (me) {
+            return (me.friendlyName || me.address || state.phone) + ' (you)';
+        }
+    }
+
     // Fallback: use member IDs, lookup name by lowercase UUID
     const otherIds = conv.memberIds.filter(id => id.toLowerCase() !== state.userId);
+    if (otherIds.length === 0 && conv.memberIds.length > 0) {
+        return state.phone + ' (you)';
+    }
     return otherIds.map(id => {
         return state.memberNames[id] || state.memberNames[id.toLowerCase()] || id.substring(0, 8) + '...';
     }).join(', ');
@@ -783,9 +824,148 @@ function loadMediaForMessages() {
         if (msg.mediaType === 'ImageAvif') {
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
         } else if (msg.mediaType === 'AudioOgg') {
-            el.innerHTML = `<audio controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Your browser does not support audio.</audio>`;
+            createWaveformPlayer(el, url);
         }
     }
+}
+
+// ─── Waveform Audio Player ──────────────────────────────────────────────────
+function createWaveformPlayer(container, audioUrl) {
+    const playerId = 'player-' + Math.random().toString(36).slice(2);
+    container.innerHTML = `
+        <div class="waveform-player" id="${playerId}">
+            <button class="waveform-play-btn" title="Play">&#9654;</button>
+            <div class="waveform-bars"></div>
+            <span class="waveform-time">0:00</span>
+        </div>
+    `;
+
+    const player = document.getElementById(playerId);
+    const playBtn = player.querySelector('.waveform-play-btn');
+    const barsContainer = player.querySelector('.waveform-bars');
+    const timeDisplay = player.querySelector('.waveform-time');
+
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.src = audioUrl;
+
+    const barCount = 40;
+    let bars = [];
+    let isPlaying = false;
+    let waveformGenerated = false;
+
+    // Create placeholder bars
+    for (let i = 0; i < barCount; i++) {
+        const bar = document.createElement('div');
+        bar.className = 'waveform-bar';
+        bar.style.height = (20 + Math.random() * 60) + '%';
+        barsContainer.appendChild(bar);
+        bars.push(bar);
+    }
+
+    // Generate real waveform from audio data
+    async function generateWaveform() {
+        if (waveformGenerated) return;
+        waveformGenerated = true;
+        try {
+            const resp = await fetch(audioUrl);
+            const arrayBuf = await resp.arrayBuffer();
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const decoded = await audioCtx.decodeAudioData(arrayBuf);
+            const channelData = decoded.getChannelData(0);
+            audioCtx.close();
+
+            const samplesPerBar = Math.floor(channelData.length / barCount);
+            const amplitudes = [];
+            let maxAmp = 0;
+            for (let i = 0; i < barCount; i++) {
+                let sum = 0;
+                const start = i * samplesPerBar;
+                for (let j = start; j < start + samplesPerBar && j < channelData.length; j++) {
+                    sum += Math.abs(channelData[j]);
+                }
+                const avg = sum / samplesPerBar;
+                amplitudes.push(avg);
+                if (avg > maxAmp) maxAmp = avg;
+            }
+            // Normalize and set bar heights (min 10%, max 100%)
+            for (let i = 0; i < barCount; i++) {
+                const normalized = maxAmp > 0 ? amplitudes[i] / maxAmp : 0;
+                bars[i].style.height = (10 + normalized * 90) + '%';
+            }
+        } catch (e) {
+            // Keep placeholder bars on error
+        }
+    }
+
+    playBtn.onclick = () => {
+        if (isPlaying) {
+            audio.pause();
+        } else {
+            // Pause any other playing audio
+            document.querySelectorAll('.waveform-player.playing').forEach(p => {
+                if (p !== player) {
+                    const otherBtn = p.querySelector('.waveform-play-btn');
+                    if (otherBtn) otherBtn.click();
+                }
+            });
+            audio.play();
+            generateWaveform();
+        }
+    };
+
+    audio.onplay = () => {
+        isPlaying = true;
+        player.classList.add('playing');
+        playBtn.innerHTML = '&#9646;&#9646;'; // pause
+    };
+
+    audio.onpause = () => {
+        isPlaying = false;
+        player.classList.remove('playing');
+        playBtn.innerHTML = '&#9654;'; // play
+    };
+
+    audio.onended = () => {
+        isPlaying = false;
+        player.classList.remove('playing');
+        playBtn.innerHTML = '&#9654;';
+        updateProgress(0);
+    };
+
+    audio.ontimeupdate = () => {
+        if (!audio.duration) return;
+        const progress = audio.currentTime / audio.duration;
+        updateProgress(progress);
+        const remaining = audio.duration - audio.currentTime;
+        const mins = Math.floor(remaining / 60);
+        const secs = Math.floor(remaining % 60);
+        timeDisplay.textContent = mins + ':' + secs.toString().padStart(2, '0');
+    };
+
+    audio.onloadedmetadata = () => {
+        const dur = audio.duration;
+        const mins = Math.floor(dur / 60);
+        const secs = Math.floor(dur % 60);
+        timeDisplay.textContent = mins + ':' + secs.toString().padStart(2, '0');
+    };
+
+    function updateProgress(progress) {
+        const activeCount = Math.floor(progress * barCount);
+        for (let i = 0; i < barCount; i++) {
+            bars[i].classList.toggle('active', i < activeCount);
+        }
+    }
+
+    // Click on waveform to seek
+    barsContainer.onclick = (e) => {
+        if (!audio.duration) return;
+        const rect = barsContainer.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const progress = x / rect.width;
+        audio.currentTime = progress * audio.duration;
+        if (!isPlaying) audio.play();
+    };
 }
 
 function getDeviceLabel(msg) {
