@@ -417,9 +417,12 @@ async function startNewChat() {
 
 // ─── Media ───────────────────────────────────────────────────────────────────
 function getMediaProxyUrl(msg, convId) {
-    if (!msg.mediaId || !msg.uuid) return null;
+    if (!msg.mediaId) return null;
+    // uuid may be missing from conversation detail responses;
+    // fall back to messageId (same strategy as reference implementation)
+    const uuid = msg.uuid || msg.messageId;
     const params = new URLSearchParams({
-        uuid: msg.uuid,
+        uuid: uuid,
         mediaId: msg.mediaId,
         messageId: msg.messageId,
         conversationId: convId,
@@ -889,7 +892,7 @@ function loadMediaForMessages() {
     if (!convId) return;
 
     for (const msg of state.messages) {
-        if (!msg.mediaId || !msg.uuid) continue;
+        if (!msg.mediaId) continue;
         const el = document.getElementById(`media-${msg.messageId}`);
         if (!el || el.dataset.loaded) continue;
         el.dataset.loaded = 'true';
