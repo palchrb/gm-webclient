@@ -36,10 +36,10 @@ func TestDefaultAndroidDevice(t *testing.T) {
 		t.Error("Model should not be empty")
 	}
 
-	// Verify Chrome version format (e.g., "120.0.6099.144")
-	chromePattern := regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+$`)
-	if !chromePattern.MatchString(device.ChromeVersion) {
-		t.Errorf("ChromeVersion has invalid format: %s", device.ChromeVersion)
+	// Verify Firebase IID version format (e.g., "21.1.0")
+	iidPattern := regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	if !iidPattern.MatchString(device.FirebaseIIDVersion) {
+		t.Errorf("FirebaseIIDVersion has invalid format: %s", device.FirebaseIIDVersion)
 	}
 }
 
@@ -59,12 +59,12 @@ func TestGarminAPKCertSHA1(t *testing.T) {
 func TestAndroidDeviceInfo_Fields(t *testing.T) {
 	// Test that we can create a custom AndroidDeviceInfo
 	custom := AndroidDeviceInfo{
-		BuildFingerprint: "google/test/test:13/TEST/1:user/release-keys",
-		SDKVersion:       33,
-		GMSVersion:       240000000,
-		Device:           "test_device",
-		Model:            "Test Model",
-		ChromeVersion:    "120.0.0.0",
+		BuildFingerprint:   "google/test/test:13/TEST/1:user/release-keys",
+		SDKVersion:         33,
+		GMSVersion:         240000000,
+		Device:             "test_device",
+		Model:              "Test Model",
+		FirebaseIIDVersion: "21.1.0",
 	}
 
 	if custom.BuildFingerprint != "google/test/test:13/TEST/1:user/release-keys" {
@@ -82,7 +82,7 @@ func TestAndroidDeviceInfo_Fields(t *testing.T) {
 	if custom.Model != "Test Model" {
 		t.Error("Model field not set correctly")
 	}
-	if custom.ChromeVersion != "120.0.0.0" {
-		t.Error("ChromeVersion field not set correctly")
+	if custom.FirebaseIIDVersion != "21.1.0" {
+		t.Error("FirebaseIIDVersion field not set correctly")
 	}
 }

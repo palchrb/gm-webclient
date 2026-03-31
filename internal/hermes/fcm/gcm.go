@@ -127,13 +127,14 @@ func gcmRegister(ctx context.Context, httpClient *http.Client, androidID, securi
 		"cert":   {GarminAPKCertSHA1}, // APK signing certificate SHA1
 
 		// App and GCM version info
-		"app_ver":    {"160500"},                                // App version code (example)
-		"gcm_ver":    {strconv.Itoa(device.GMSVersion)},         // Google Mobile Services version
-		"X-scope":    {"GCM"},                                   // Scope for this registration
-		"X-appid":    {instanceID},                              // Instance ID (11-char hex)
-		"X-osv":      {strconv.Itoa(device.SDKVersion)},         // Android SDK version
-		"X-gmsv":     {strconv.Itoa(device.GMSVersion)},         // GMS version (duplicate for compatibility)
-		"X-cliv":     {"iid-" + device.ChromeVersion},           // Client version (IID library)
+		"app_ver":    {"160500"},
+		"gcm_ver":    {strconv.Itoa(device.GMSVersion)},
+		"X-scope":    {"FCM"},                                       // Modern Firebase scope (not legacy "GCM")
+		"X-subtype":  {GarminSenderID},                              // Required for Firebase scoped tokens
+		"X-appid":    {instanceID},
+		"X-osv":      {strconv.Itoa(device.SDKVersion)},
+		"X-gmsv":     {strconv.Itoa(device.GMSVersion)},
+		"X-cliv":     {"fiid-" + device.FirebaseIIDVersion},         // Firebase IID library version
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, gcmRegisterURL, strings.NewReader(form.Encode()))
@@ -144,6 +145,7 @@ func gcmRegister(ctx context.Context, httpClient *http.Client, androidID, securi
 	httpReq.Header.Set("Authorization", fmt.Sprintf("AidLogin %d:%d", androidID, securityToken))
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("Android-GCM/1.5 (%s %s)", device.Device, device.Model))
 	httpReq.Header.Set("app", garminAppPackage)
+	httpReq.Header.Set("Gcm-Ver", strconv.Itoa(device.GMSVersion))
 
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {

@@ -218,6 +218,57 @@ func (c *Client) Register(ctx context.Context) (string, error) {
 	return fcmToken, nil
 }
 
+// Refresh obtains a new FCM token using existing device credentials (androidId/securityToken).
+// This is safer than a full re-registration and avoids Google's PHONE_REGISTRATION_ERROR.
+// Returns the new token. Call this if the backend rejects the current token.
+func (c *Client) Refresh(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.credentials == nil {
+		if err := c.loadCredentials(); err != nil {
+			return "", fmt.Errorf("no existing FCM credentials to refresh: %w", err)
+		}
+	}
+
+	var gcmCreds gcmCredentials
+	if err := json.Unmarshal(c.credentials.Raw, &gcmCreds); err != nil {
+		return "", fmt.Errorf("parsing existing GCM credentials: %w", err)
+	}
+
+	if gcmCreds.AndroidID == 0 || gcmCreds.SecurityToken == 0 {
+		return "", fmt.Errorf("invalid GCM credentials (zero androidId or securityToken)")
+	}
+
+	c.logger.Debug("Refreshing FCM token using existing device credentials")
+	httpClient := c.loggingHTTPClient()
+
+	// Re-checkin with existing credentials to refresh the session
+	device := DefaultAndroidDevice()
+	androidID, securityToken, err := gcmCheckin(ctx, httpClient, gcmCreds.AndroidID, gcmCreds.SecurityToken, device)
+	if err != nil {
+		return "", fmt.Errorf("FCM refresh failed (re-checkin): %w", err)
+	}
+
+	// Re-register to get a fresh token
+	fcmToken, err := gcmRegister(ctx, httpClient, androidID, securityToken, device)
+	if err != nil {
+		return "", fmt.Errorf("FCM refresh failed (re-register): %w", err)
+	}
+
+	// Update credentials
+	rawCreds, _ := json.Marshal(gcmCredentials{AndroidID: androidID, SecurityToken: securityToken})
+	c.credentials.Raw = rawCreds
+	c.credentials.Token = fcmToken
+
+	if err := c.saveCredentials(); err != nil {
+		c.logger.Error("Failed to save refreshed FCM credentials", "error", err)
+	}
+
+	c.logger.Info("FCM token refreshed", "token_prefix", truncate(fcmToken, 20))
+	return fcmToken, nil
+}
+
 // Listen connects to Google's MCS and processes incoming push notifications.
 // It blocks until ctx is cancelled. Call Register() first to ensure credentials exist.
 func (c *Client) Listen(ctx context.Context) error {

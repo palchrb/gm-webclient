@@ -236,16 +236,16 @@ func (m *mcsClient) handlePacket(tag mcsTag, data []byte) error {
 		}
 		m.logger.Debug("MCS data message", "from", msg.GetFrom(), "category", msg.GetCategory(), "persistentId", msg.GetPersistentId())
 
-		// Android-native: Messages arrive as plaintext AppData (no encryption)
+		// Android-native: Messages typically arrive as plaintext AppData.
+		// Some messages may include raw_data — pass it through rather than rejecting.
 		if len(msg.GetRawData()) > 0 {
-			m.logger.Error("MCS: encrypted raw_data no longer supported - re-register with Android-native FCM")
-			return fmt.Errorf("encrypted FCM messages no longer supported; re-run 'garmin-messenger login'")
+			m.logger.Warn("MCS: received raw_data alongside AppData",
+				"raw_data_len", len(msg.GetRawData()))
 		}
 
-		// Parse plaintext AppData
 		appData := msg.GetAppData()
 		if m.onDataMessage != nil {
-			m.onDataMessage(msg.GetPersistentId(), nil, appData)
+			m.onDataMessage(msg.GetPersistentId(), msg.GetRawData(), appData)
 		}
 
 	case tagClose:

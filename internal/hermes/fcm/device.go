@@ -19,8 +19,9 @@ type AndroidDeviceInfo struct {
 	// Model is the device model name (e.g., "Pixel 7")
 	Model string
 
-	// ChromeVersion is the Chrome browser version (for compatibility)
-	ChromeVersion string
+	// FirebaseIIDVersion is the Firebase Instance ID library version.
+	// Used in the X-cliv header during FCM registration.
+	FirebaseIIDVersion string
 
 	// Hardware is the hardware name (Build.HARDWARE), usually same as Device
 	Hardware string
@@ -80,7 +81,7 @@ func DefaultAndroidDevice() AndroidDeviceInfo {
 		// Build.TIME / 1000 for TQ3A.230805.001 (approx August 5, 2023)
 		BuildTime: 1691193600,
 
-		// Chrome 120.0.6099.144 (stable version from ~December 2023)
-		ChromeVersion: "120.0.6099.144",
+		// Firebase Instance ID library version
+		FirebaseIIDVersion: "21.1.0",
 	}
 }
