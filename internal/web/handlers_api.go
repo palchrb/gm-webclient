@@ -12,15 +12,17 @@ import (
 func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 
-	// Fetch all conversations by paginating: request a large page, then keep
-	// fetching older pages using AfterDate=epoch (start of time) trick:
-	// the API returns the N most-recently-updated, so if we get back fewer
-	// than Limit we know we have them all.  If we hit the limit, there may
-	// be more — but Garmin's API doesn't support cursor pagination, so we
-	// rely on a high limit (500) being sufficient for most users.
 	const pageSize = 500
+	opts := []gm.GetConversationsOption{gm.WithLimit(pageSize)}
 
-	result, err := session.API.GetConversations(r.Context(), gm.WithLimit(pageSize))
+	// Cursor-based pagination: pass lastConversationId from previous response
+	if cursor := r.URL.Query().Get("after"); cursor != "" {
+		if id, err := uuid.Parse(cursor); err == nil {
+			opts = append(opts, gm.WithLastConversationID(id))
+		}
+	}
+
+	result, err := session.API.GetConversations(r.Context(), opts...)
 	if err != nil {
 		handleAPIError(w, err, "get conversations")
 		return
@@ -28,7 +30,7 @@ func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) 
 
 	s.logger.Debug("Fetched conversations",
 		"count", len(result.Conversations),
-		"limit", pageSize,
+		"lastConversationId", result.LastConversationID,
 	)
 
 	writeJSON(w, http.StatusOK, result)

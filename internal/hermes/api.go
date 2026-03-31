@@ -62,8 +62,9 @@ func (api *HermesAPI) Close() {}
 // GetConversationsOption configures GetConversations.
 type GetConversationsOption func(*getConversationsParams)
 type getConversationsParams struct {
-	limit     int
-	afterDate *time.Time
+	limit              int
+	afterDate          *time.Time
+	lastConversationID *uuid.UUID
 }
 
 // WithLimit sets the conversation limit.
@@ -76,6 +77,11 @@ func WithAfterDate(t time.Time) GetConversationsOption {
 	return func(p *getConversationsParams) { p.afterDate = &t }
 }
 
+// WithLastConversationID sets the cursor for pagination.
+func WithLastConversationID(id uuid.UUID) GetConversationsOption {
+	return func(p *getConversationsParams) { p.lastConversationID = &id }
+}
+
 // GetConversations returns conversations updated after a date.
 func (api *HermesAPI) GetConversations(ctx context.Context, opts ...GetConversationsOption) (*GetConversationsModel, error) {
 	params := &getConversationsParams{limit: 50}
@@ -86,6 +92,9 @@ func (api *HermesAPI) GetConversations(ctx context.Context, opts ...GetConversat
 	q := url.Values{"Limit": {fmt.Sprint(params.limit)}}
 	if params.afterDate != nil {
 		q.Set("AfterDate", params.afterDate.Format(time.RFC3339))
+	}
+	if params.lastConversationID != nil {
+		q.Set("LastConversationId", params.lastConversationID.String())
 	}
 
 	var result GetConversationsModel
