@@ -79,6 +79,11 @@
                         <button class="leave-btn" onclick="leaveConversation(state.currentConversationId)" title="Leave conversation">&#128465;</button>
                     </div>
                     <div id="messages" class="messages"></div>
+                    <div id="media-preview" class="media-preview hidden">
+                        <img id="media-preview-img" class="media-preview-img hidden" alt="Preview">
+                        <span id="media-preview-audio" class="media-preview-audio hidden"></span>
+                        <button class="media-preview-cancel" onclick="cancelMediaPreview()" title="Cancel">&times;</button>
+                    </div>
                     <div class="composer">
                         <input type="file" id="file-input" class="hidden" accept="image/jpeg,image/png,image/webp,image/avif,audio/ogg,audio/mpeg,audio/mp4,audio/wav,audio/webm" onchange="handleFileSelect()">
                         <button class="composer-btn" onclick="document.getElementById('file-input').click()" title="Send image or audio file">&#128206;</button>

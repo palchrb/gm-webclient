@@ -121,6 +121,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/conversations/{id}/members", s.requireSession(s.handleGetConversationMembers))
 	s.mux.HandleFunc("POST /api/conversations/{id}/leave", s.requireSession(s.handleLeaveConversation))
 	s.mux.HandleFunc("POST /api/messages/send", s.requireSession(s.handleSendMessage))
+	s.mux.HandleFunc("POST /api/messages/react", s.requireSession(s.handleSendReaction))
 	s.mux.HandleFunc("POST /api/messages/{convId}/{msgId}/read", s.requireSession(s.handleMarkAsRead))
 	s.mux.HandleFunc("GET /api/media", s.requireSession(s.handleGetMediaURL))
 	s.mux.HandleFunc("GET /api/media/proxy", s.requireSession(s.handleProxyMedia))

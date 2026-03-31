@@ -11,6 +11,39 @@ const state = {
     eventSource: null,
 };
 
+// ─── Local Cache ─────────────────────────────────────────────────────────────
+// Cache conversations and members in localStorage to avoid hammering the
+// Garmin API on every page load. Data is refreshed in the background.
+const cache = {
+    set(key, value) {
+        try {
+            localStorage.setItem('gm_' + key, JSON.stringify({ t: Date.now(), v: value }));
+        } catch (e) { /* quota exceeded or private mode */ }
+    },
+    get(key, maxAgeMs) {
+        try {
+            const raw = localStorage.getItem('gm_' + key);
+            if (!raw) return null;
+            const { t, v } = JSON.parse(raw);
+            if (maxAgeMs && Date.now() - t > maxAgeMs) return null;
+            return v;
+        } catch (e) { return null; }
+    },
+    remove(key) {
+        try { localStorage.removeItem('gm_' + key); } catch (e) {}
+    },
+    clear() {
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith('gm_')) keys.push(k);
+            }
+            keys.forEach(k => localStorage.removeItem(k));
+        } catch (e) {}
+    },
+};
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 async function init() {
     try {
@@ -77,6 +110,7 @@ async function confirmOTP() {
 async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
     if (state.eventSource) state.eventSource.close();
+    cache.clear();
     state.loggedIn = false;
     state.phone = null;
     state.conversations = [];
@@ -87,55 +121,33 @@ async function logout() {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 async function loadConversations() {
+    // Show cached data immediately (avoids blank screen + reduces API calls)
+    const cached = cache.get('conversations', 5 * 60 * 1000); // 5 min
+    const cachedMembers = cache.get('members');
+    const cachedNames = cache.get('memberNames');
+
+    if (cached) {
+        state.conversations = cached;
+        if (cachedMembers) state.members = cachedMembers;
+        if (cachedNames) state.memberNames = cachedNames;
+        renderConversations();
+    }
+
+    // Background refresh from Garmin API
     try {
-        // Fetch all conversations by paginating until no more are returned.
-        // The Garmin API returns up to `limit` per request; we keep fetching
-        // older pages until we get fewer than the page size.
-        let allConversations = [];
-        let oldestDate = null;
-        const pageSize = 200;
-
-        while (true) {
-            let url = `/api/conversations?limit=${pageSize}`;
-            if (oldestDate) {
-                // Fetch conversations updated before the oldest we've seen
-                url += `&beforeDate=${encodeURIComponent(oldestDate)}`;
-            }
-            const resp = await api(url);
-            const page = resp.conversations || [];
-            if (page.length === 0) break;
-
-            allConversations = allConversations.concat(page);
-
-            // Find the oldest updatedDate in this page for next pagination
-            const dates = page.map(c => new Date(c.updatedDate).getTime()).filter(d => !isNaN(d));
-            if (dates.length > 0) {
-                const minDate = new Date(Math.min(...dates));
-                oldestDate = minDate.toISOString();
-            }
-
-            // If we got fewer than the page size, we've reached the end
-            if (page.length < pageSize) break;
-        }
-
-        // Deduplicate by conversationId (in case of overlap between pages)
-        const seen = new Set();
-        state.conversations = [];
-        for (const conv of allConversations) {
-            if (!seen.has(conv.conversationId)) {
-                seen.add(conv.conversationId);
-                state.conversations.push(conv);
-            }
-        }
-        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
-
-        // Load members for each conversation
+        const resp = await api('/api/conversations?limit=500');
+        state.conversations = (resp.conversations || []).sort(
+            (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
+        );
+        cache.set('conversations', state.conversations);
+        renderConversations();
+        // Load members in background (don't block rendering)
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
         }
-        renderConversations();
     } catch (e) {
         console.error('Failed to load conversations:', e);
+        // If we have cached data, that's fine — just use it
     }
 }
 
@@ -155,6 +167,9 @@ async function loadMembers(convId) {
                 state.memberNames[m.address] = name;
             }
         }
+        // Persist to cache
+        cache.set('members', state.members);
+        cache.set('memberNames', state.memberNames);
         renderConversations();
         if (state.currentConversationId === convId) {
             renderMessages();
@@ -173,12 +188,20 @@ async function selectConversation(convId) {
     // Close sidebar on mobile
     document.getElementById('sidebar').classList.remove('open');
 
-    // Load messages
+    // Show cached messages immediately, then refresh from API
+    const cachedMsgs = cache.get('msgs_' + convId, 2 * 60 * 1000); // 2 min
+    if (cachedMsgs) {
+        state.messages = cachedMsgs;
+        renderMessages();
+        scrollToBottom();
+    }
+
     try {
         const resp = await api(`/api/conversations/${convId}?limit=50`);
         state.messages = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
+        cache.set('msgs_' + convId, state.messages);
         renderMessages();
         scrollToBottom();
 
@@ -225,9 +248,18 @@ async function leaveConversation(convId) {
 async function sendMessage() {
     const input = document.getElementById('message-input');
     const body = input.value.trim();
+
+    // If there's a staged media file, send it (with optional caption)
+    if (stagedMediaFile) {
+        const file = stagedMediaFile;
+        cancelMediaPreview();
+        input.value = '';
+        sendMediaFile(file, body);
+        return;
+    }
+
     if (!body || !state.currentConversationId) return;
 
-    // Use phone numbers (member.address) for recipients, not Hermes UUIDs.
     const to = getRecipientPhones(state.currentConversationId);
     if (to.length === 0) {
         console.error('No recipient phone numbers found — members may not be loaded yet');
@@ -247,7 +279,6 @@ async function sendMessage() {
             method: 'POST',
             body: { conversationId: convId, to, body }
         });
-        // Replace temp message with real one from server
         replaceOptimisticMessage(convId, tempId, result.messageId, 'sent');
     } catch (e) {
         console.error('Failed to send message:', e);
@@ -396,7 +427,51 @@ function getMediaProxyUrl(msg, convId) {
     return `/api/media/proxy?${params}`;
 }
 
-async function sendMediaFile(file) {
+// Stage a file for preview before sending (allows adding caption)
+function handleFileSelect() {
+    const input = document.getElementById('file-input');
+    if (input.files.length > 0) {
+        stageMediaPreview(input.files[0]);
+        input.value = '';
+    }
+}
+
+let stagedMediaFile = null;
+
+function stageMediaPreview(file) {
+    stagedMediaFile = file;
+    const preview = document.getElementById('media-preview');
+    const previewImg = document.getElementById('media-preview-img');
+    const previewAudio = document.getElementById('media-preview-audio');
+    const msgInput = document.getElementById('message-input');
+
+    previewImg.classList.add('hidden');
+    previewAudio.classList.add('hidden');
+
+    if (file.type.startsWith('image/')) {
+        const url = URL.createObjectURL(file);
+        previewImg.src = url;
+        previewImg.classList.remove('hidden');
+        previewImg.onload = () => URL.revokeObjectURL(url);
+    } else if (file.type.startsWith('audio/')) {
+        previewAudio.textContent = 'Audio: ' + file.name;
+        previewAudio.classList.remove('hidden');
+    }
+
+    preview.classList.remove('hidden');
+    msgInput.placeholder = 'Add a caption... (optional)';
+    msgInput.focus();
+}
+
+function cancelMediaPreview() {
+    stagedMediaFile = null;
+    const preview = document.getElementById('media-preview');
+    const msgInput = document.getElementById('message-input');
+    preview.classList.add('hidden');
+    msgInput.placeholder = 'Type a message...';
+}
+
+async function sendMediaFile(file, caption) {
     if (!state.currentConversationId) return;
     const convId = state.currentConversationId;
     const to = getRecipientPhones(convId);
@@ -406,13 +481,14 @@ async function sendMediaFile(file) {
     }
 
     const tempId = 'sending-media-' + Date.now();
-    const label = file.type.startsWith('image/') ? 'Sending image...' : 'Sending audio...';
+    const label = caption || (file.type.startsWith('image/') ? 'Sending image...' : 'Sending audio...');
     addOptimisticMessage(convId, tempId, label, 'sending');
 
     const form = new FormData();
     form.append('file', file);
     form.append('to', JSON.stringify(to));
     form.append('conversationId', convId);
+    if (caption) form.append('body', caption);
 
     try {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
@@ -423,14 +499,6 @@ async function sendMediaFile(file) {
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
-    }
-}
-
-function handleFileSelect() {
-    const input = document.getElementById('file-input');
-    if (input.files.length > 0) {
-        sendMediaFile(input.files[0]);
-        input.value = '';
     }
 }
 
@@ -700,11 +768,12 @@ function renderMessages() {
         html += `
             <div class="message ${cls}${failedCls}${sendingCls}">
                 ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
-                <div class="message-bubble">${escapeHtml(body)}${mediaHtml}${location}${transcription}</div>
+                <div class="message-bubble">${mediaHtml}${body ? `<div class="message-text">${escapeHtml(body)}</div>` : ''}${location}${transcription}</div>
                 <div class="message-meta">
                     <span>${time}</span>
                     ${device ? `<span class="message-device">${device}</span>` : ''}
                     ${statusIcon ? `<span class="message-status ${sendState === 'failed' ? 'failed' : getStatusClass(msg)}">${statusIcon}</span>` : ''}
+                    ${!sendState ? `<button class="react-btn" onclick="showReactionPicker('${msg.messageId}')" title="React">+</button>` : ''}
                 </div>
                 ${errorHtml}
             </div>
@@ -780,8 +849,10 @@ function getMessageBody(msg) {
     // Strip ZWS reaction encoding
     body = body.replace(/[\u200a\u200b\u2009]/g, '').trim();
     if (msg.transcription) {
-        body = (body ? body + ' ' : '') + '🎤 ' + msg.transcription;
+        body = (body ? body + ' ' : '') + msg.transcription;
     }
+    // Don't show "(no text)" for media-only messages
+    if (!body && msg.mediaId) return '';
     return body || '(no text)';
 }
 
@@ -1078,6 +1149,57 @@ async function api(url, opts = {}) {
         throw new Error(data.error || `HTTP ${resp.status}`);
     }
     return data;
+}
+
+// ─── Reactions ──────────────────────────────────────────────────────────────
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+function showReactionPicker(messageId) {
+    // Remove any existing picker
+    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+
+    const msgEl = document.querySelector(`[data-msg-id="${messageId}"]`);
+    if (!msgEl) {
+        // Fallback: find by react button
+        const btn = event.target;
+        const picker = document.createElement('div');
+        picker.className = 'reaction-picker';
+        picker.innerHTML = REACTION_EMOJIS.map(e =>
+            `<button class="reaction-emoji" onclick="sendReaction('${messageId}', '${e}')">${e}</button>`
+        ).join('');
+        btn.closest('.message').appendChild(picker);
+        // Auto-close on click outside
+        setTimeout(() => document.addEventListener('click', function close(ev) {
+            if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); }
+        }), 0);
+        return;
+    }
+}
+
+async function sendReaction(messageId, emoji) {
+    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+
+    const msg = state.messages.find(m => m.messageId === messageId);
+    if (!msg) return;
+
+    const to = getRecipientPhones(state.currentConversationId);
+    if (to.length === 0) return;
+
+    const targetBody = msg.messageBody || '';
+
+    try {
+        await api('/api/messages/react', {
+            method: 'POST',
+            body: {
+                conversationId: state.currentConversationId,
+                to,
+                emoji,
+                targetBody,
+            }
+        });
+    } catch (e) {
+        console.error('Failed to send reaction:', e);
+    }
 }
 
 // ─── Push Notifications ──────────────────────────────────────────────────────

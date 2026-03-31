@@ -107,8 +107,8 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 		return
 	}
 
-	// Extract notification content from the message
-	payload := buildPushPayload(event.Data)
+	// Extract notification content from the message (skip own messages)
+	payload := buildPushPayload(event.Data, session.Phone)
 	if payload == nil {
 		return
 	}
@@ -165,9 +165,16 @@ func (srv *Server) sendWebPush(session *UserSession, event SSEEvent) {
 	}
 }
 
-func buildPushPayload(data any) map[string]string {
+func buildPushPayload(data any, phone string) map[string]string {
 	switch msg := data.(type) {
 	case gm.MessageModel:
+		// Don't push notifications for our own sent messages
+		if msg.From != nil {
+			from := *msg.From
+			if from == phone || from == gm.PhoneToHermesUserID(phone) {
+				return nil
+			}
+		}
 		p := map[string]string{
 			"title":          "Garmin Messenger",
 			"conversationId": msg.ConversationID.String(),

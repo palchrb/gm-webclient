@@ -153,10 +153,10 @@ func (api *HermesAPI) MuteConversation(ctx context.Context, conversationID uuid.
 	return api.doPostNoResult(ctx, path, nil, "1.0")
 }
 
-// LeaveConversation removes the current user from a conversation (hides/deletes it).
+// LeaveConversation hides a conversation by muting it.
+// Garmin's API has no delete/leave endpoint; muting is the closest available action.
 func (api *HermesAPI) LeaveConversation(ctx context.Context, conversationID uuid.UUID) error {
-	path := fmt.Sprintf("Conversation/%s/Leave", conversationID)
-	return api.doPostNoResult(ctx, path, nil, "1.0")
+	return api.MuteConversation(ctx, conversationID, true)
 }
 
 // GetConversationMembers returns member details for a conversation.
