@@ -121,8 +121,10 @@ async function logout() {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 async function loadConversations() {
-    // Show cached data immediately (avoids blank screen + reduces API calls)
-    const cached = cache.get('conversations', 5 * 60 * 1000); // 5 min
+    // Show cached data immediately (avoids blank screen + reduces API calls).
+    // Cache is long-lived (24h) — real-time updates come via SSE/SignalR,
+    // and we do one background refresh per page load to catch anything missed.
+    const cached = cache.get('conversations'); // no TTL — show cached instantly, always refresh below
     const cachedMembers = cache.get('members');
     const cachedNames = cache.get('memberNames');
 
@@ -133,7 +135,7 @@ async function loadConversations() {
         renderConversations();
     }
 
-    // Background refresh from Garmin API
+    // One background refresh per page load to catch anything missed while offline
     try {
         const resp = await api('/api/conversations?limit=500');
         state.conversations = (resp.conversations || []).sort(
@@ -141,13 +143,12 @@ async function loadConversations() {
         );
         cache.set('conversations', state.conversations);
         renderConversations();
-        // Load members in background (don't block rendering)
+        // Only fetch members we don't already have cached
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
         }
     } catch (e) {
         console.error('Failed to load conversations:', e);
-        // If we have cached data, that's fine — just use it
     }
 }
 
@@ -189,7 +190,7 @@ async function selectConversation(convId) {
     document.getElementById('sidebar').classList.remove('open');
 
     // Show cached messages immediately, then refresh from API
-    const cachedMsgs = cache.get('msgs_' + convId, 2 * 60 * 1000); // 2 min
+    const cachedMsgs = cache.get('msgs_' + convId); // no TTL — show cached instantly, always refresh below
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
@@ -416,9 +417,12 @@ async function startNewChat() {
 
 // ─── Media ───────────────────────────────────────────────────────────────────
 function getMediaProxyUrl(msg, convId) {
-    if (!msg.mediaId || !msg.uuid) return null;
+    if (!msg.mediaId) return null;
+    // uuid may be missing from conversation detail responses;
+    // fall back to messageId (same strategy as reference implementation)
+    const uuid = msg.uuid || msg.messageId;
     const params = new URLSearchParams({
-        uuid: msg.uuid,
+        uuid: uuid,
         mediaId: msg.mediaId,
         messageId: msg.messageId,
         conversationId: convId,
@@ -664,6 +668,8 @@ function handleIncomingMessage(msg) {
         // New conversation - reload
         loadConversations();
     }
+    // Update conversation cache with live data
+    cache.set('conversations', state.conversations);
     renderConversations();
 
     // If viewing this conversation, append message
@@ -671,6 +677,8 @@ function handleIncomingMessage(msg) {
         // Avoid duplicates
         if (!state.messages.find(m => m.messageId === msg.messageId)) {
             state.messages.push(msg);
+            // Update message cache with live data
+            cache.set('msgs_' + convId, state.messages);
             renderMessages();
             scrollToBottom();
             markAsRead(convId, msg.messageId);
@@ -884,7 +892,7 @@ function loadMediaForMessages() {
     if (!convId) return;
 
     for (const msg of state.messages) {
-        if (!msg.mediaId || !msg.uuid) continue;
+        if (!msg.mediaId) continue;
         const el = document.getElementById(`media-${msg.messageId}`);
         if (!el || el.dataset.loaded) continue;
         el.dataset.loaded = 'true';
