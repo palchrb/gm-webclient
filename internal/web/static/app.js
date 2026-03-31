@@ -1086,10 +1086,12 @@ function loadMediaForMessages() {
     const convId = state.currentConversationId;
     if (!convId) return;
 
+    const container = document.getElementById('messages');
+
     for (const msg of state.messages) {
         if (!msg.mediaId) continue;
         if (mediaUrlCache[msg.messageId]) {
-            // Already cached — just need to init waveform players (they need JS setup)
+            // Already cached — just need to init waveform players
             if (msg.mediaType === 'AudioOgg') {
                 const el = document.getElementById(`media-${msg.messageId}`);
                 if (el && !el.dataset.waveform) {
@@ -1103,14 +1105,16 @@ function loadMediaForMessages() {
         const url = getMediaProxyUrl(msg, convId);
         if (!url) continue;
 
-        // Cache the URL and render
         mediaUrlCache[msg.messageId] = url;
 
         const el = document.getElementById(`media-${msg.messageId}`);
         if (!el) continue;
 
+        // Preserve scroll position when inserting media above viewport
+        const scrollBottom = container.scrollHeight - container.scrollTop;
+
         if (msg.mediaType === 'ImageAvif') {
-            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy">`;
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
             createWaveformPlayer(el, url);
         }
@@ -1312,6 +1316,16 @@ function formatDate(dateStr) {
 function formatMessageTime(dateStr) {
     if (!dateStr) return '';
     return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Called when an image finishes loading — prevents scroll jump.
+// If user was near bottom, stay at bottom. Otherwise hold position.
+function stabilizeScroll() {
+    const container = document.getElementById('messages');
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+    if (nearBottom) {
+        container.scrollTop = container.scrollHeight;
+    }
 }
 
 function openLightbox(url) {
