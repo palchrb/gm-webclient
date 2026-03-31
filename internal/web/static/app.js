@@ -410,11 +410,20 @@ async function reloadCurrentConversation(delayMs) {
         const serverMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
-        // Keep optimistic messages that the server doesn't know about yet
+        // Keep only optimistic messages that:
+        // 1. Are still actively 'sending' (API hasn't returned yet)
+        // 2. Have a real server ID (from replaceOptimisticMessage) but aren't in server response yet
+        // Drop 'sending' messages with temp IDs — the server response should contain the real version
         const serverIds = new Set(serverMsgs.map(m => m.messageId));
-        const optimistic = state.messages.filter(m =>
-            m._sendState && !serverIds.has(m.messageId)
-        );
+        const optimistic = state.messages.filter(m => {
+            if (!m._sendState) return false;
+            // Keep failed messages so the user sees the error
+            if (m._sendState === 'failed') return true;
+            // Drop temp IDs (sending-*) — the reload should have the real message now
+            if (m.messageId.startsWith('sending-')) return false;
+            // Keep messages with real IDs not yet in server response
+            return !serverIds.has(m.messageId);
+        });
         state.messages = [...serverMsgs, ...optimistic];
         cache.set('msgs_' + convId, serverMsgs);
         renderMessages();
@@ -1071,7 +1080,7 @@ function loadMediaForMessages() {
         if (!url) continue;
 
         if (msg.mediaType === 'ImageAvif') {
-            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy">`;
         } else if (msg.mediaType === 'AudioOgg') {
             createWaveformPlayer(el, url);
         }
@@ -1273,6 +1282,14 @@ function formatDate(dateStr) {
 function formatMessageTime(dateStr) {
     if (!dateStr) return '';
     return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function openLightbox(url) {
+    const overlay = document.createElement('div');
+    overlay.className = 'lightbox';
+    overlay.innerHTML = `<img src="${url}" alt="Full size">`;
+    overlay.onclick = () => overlay.remove();
+    document.body.appendChild(overlay);
 }
 
 function escapeHtml(str) {
