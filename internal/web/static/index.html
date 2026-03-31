@@ -45,11 +45,26 @@
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar-header">
                     <h2>Samtaler</h2>
+                    <button class="new-chat-btn" onclick="showNewChatDialog()" title="Ny samtale">+</button>
                 </div>
                 <div id="conversation-list" class="conversation-list">
                     <div class="loading">Laster samtaler...</div>
                 </div>
             </aside>
+
+            <!-- New Chat Dialog -->
+            <div id="new-chat-dialog" class="modal hidden">
+                <div class="modal-content">
+                    <h3>Ny samtale</h3>
+                    <input type="tel" id="new-chat-phone" placeholder="+47 xxx xx xxx">
+                    <input type="text" id="new-chat-message" placeholder="Melding...">
+                    <div class="modal-actions">
+                        <button class="btn-secondary" onclick="hideNewChatDialog()">Avbryt</button>
+                        <button class="btn-primary" onclick="startNewChat()">Send</button>
+                    </div>
+                    <div id="new-chat-error" class="error hidden"></div>
+                </div>
+            </div>
 
             <!-- Message Area -->
             <main id="message-area" class="message-area">

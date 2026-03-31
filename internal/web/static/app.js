@@ -201,6 +201,63 @@ async function markAsRead(convId, msgId) {
     }
 }
 
+// ─── New Chat ────────────────────────────────────────────────────────────────
+function showNewChatDialog() {
+    document.getElementById('new-chat-dialog').classList.remove('hidden');
+    document.getElementById('new-chat-phone').focus();
+    document.getElementById('sidebar').classList.remove('open');
+}
+
+function hideNewChatDialog() {
+    document.getElementById('new-chat-dialog').classList.add('hidden');
+    document.getElementById('new-chat-phone').value = '';
+    document.getElementById('new-chat-message').value = '';
+    document.getElementById('new-chat-error').classList.add('hidden');
+}
+
+async function startNewChat() {
+    const phone = document.getElementById('new-chat-phone').value.trim();
+    const body = document.getElementById('new-chat-message').value.trim();
+
+    if (!phone || !body) {
+        document.getElementById('new-chat-error').textContent = 'Fyll ut telefonnummer og melding';
+        document.getElementById('new-chat-error').classList.remove('hidden');
+        return;
+    }
+
+    try {
+        const result = await api('/api/chat/new', { method: 'POST', body: { phone, body } });
+        hideNewChatDialog();
+        // Reload conversations and select the new one
+        await loadConversations();
+        if (result.conversationId) {
+            selectConversation(result.conversationId);
+        }
+    } catch (e) {
+        document.getElementById('new-chat-error').textContent = e.message || 'Kunne ikke starte samtale';
+        document.getElementById('new-chat-error').classList.remove('hidden');
+    }
+}
+
+// ─── Media ───────────────────────────────────────────────────────────────────
+async function getMediaUrl(msg, convId) {
+    if (!msg.mediaId || !msg.uuid) return null;
+    try {
+        const params = new URLSearchParams({
+            uuid: msg.uuid,
+            mediaId: msg.mediaId,
+            messageId: msg.messageId,
+            conversationId: convId,
+            mediaType: msg.mediaType || 'ImageAvif',
+        });
+        const result = await api(`/api/media?${params}`);
+        return result.downloadUrl;
+    } catch (e) {
+        console.error('Failed to get media URL:', e);
+        return null;
+    }
+}
+
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 function connectSSE() {
     if (state.eventSource) state.eventSource.close();
@@ -336,11 +393,14 @@ function renderMessages() {
         const statusIcon = isSent ? getStatusIcon(msg) : '';
         const location = getLocationHtml(msg);
         const device = getDeviceLabel(msg);
+        const mediaHtml = getMediaPlaceholder(msg);
+        const transcription = msg.transcription
+            ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
 
         html += `
             <div class="message ${cls}">
                 ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
-                <div class="message-bubble">${escapeHtml(body)}${location}</div>
+                <div class="message-bubble">${escapeHtml(body)}${mediaHtml}${location}${transcription}</div>
                 <div class="message-meta">
                     <span>${time}</span>
                     ${device ? `<span class="message-device">${device}</span>` : ''}
@@ -351,6 +411,9 @@ function renderMessages() {
     }
 
     container.innerHTML = html;
+
+    // Load media asynchronously after rendering
+    loadMediaForMessages();
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -409,6 +472,43 @@ function getLocationHtml(msg) {
     let extra = '';
     if (loc.elevationMeters != null) extra += ` ${Math.round(loc.elevationMeters)}m`;
     return `<div class="message-location"><a href="${osmUrl}" target="_blank" rel="noopener">📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}${extra}</a></div>`;
+}
+
+function getMediaPlaceholder(msg) {
+    if (!msg.mediaId) return '';
+    const msgId = msg.messageId;
+    if (msg.mediaType === 'ImageAvif') {
+        return `<div class="message-image-container" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Laster bilde...</span></div>`;
+    }
+    if (msg.mediaType === 'AudioOgg') {
+        return `<div class="message-audio" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Laster lyd...</span></div>`;
+    }
+    return '';
+}
+
+async function loadMediaForMessages() {
+    const convId = state.currentConversationId;
+    if (!convId) return;
+
+    for (const msg of state.messages) {
+        if (!msg.mediaId || !msg.uuid) continue;
+        const el = document.getElementById(`media-${msg.messageId}`);
+        if (!el || el.dataset.loaded) continue;
+        el.dataset.loaded = 'true';
+
+        try {
+            const url = await getMediaUrl(msg, convId);
+            if (!url) continue;
+
+            if (msg.mediaType === 'ImageAvif') {
+                el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Bilde" onclick="window.open('${escapeHtml(url)}', '_blank')" loading="lazy">`;
+            } else if (msg.mediaType === 'AudioOgg') {
+                el.innerHTML = `<audio class="message-audio" controls preload="none"><source src="${escapeHtml(url)}" type="audio/ogg">Nettleseren stotter ikke lyd.</audio>`;
+            }
+        } catch (e) {
+            el.innerHTML = '<span style="color:var(--error);font-size:12px">Kunne ikke laste media</span>';
+        }
+    }
 }
 
 function getDeviceLabel(msg) {

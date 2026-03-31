@@ -133,6 +133,66 @@ func (s *Server) handleMarkAsRead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleGetMediaURL(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+
+	msgUUID, err := uuid.Parse(r.URL.Query().Get("uuid"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uuid"})
+		return
+	}
+	mediaID, err := uuid.Parse(r.URL.Query().Get("mediaId"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid mediaId"})
+		return
+	}
+	messageID, err := uuid.Parse(r.URL.Query().Get("messageId"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid messageId"})
+		return
+	}
+	conversationID, err := uuid.Parse(r.URL.Query().Get("conversationId"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversationId"})
+		return
+	}
+	mediaType := gm.MediaType(r.URL.Query().Get("mediaType"))
+
+	result, err := session.API.GetMediaDownloadURL(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
+	if err != nil {
+		handleAPIError(w, err, "get media URL")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+
+	var req struct {
+		Phone string `json:"phone"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Phone == "" || req.Body == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone and body are required"})
+		return
+	}
+
+	// Derive the Hermes user ID from the phone number
+	recipientID := gm.PhoneToHermesUserID(req.Phone)
+	result, err := session.API.SendMessage(r.Context(), []string{recipientID}, req.Body)
+	if err != nil {
+		handleAPIError(w, err, "send new chat message")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func handleAPIError(w http.ResponseWriter, err error, operation string) {
 	if apiErr, ok := err.(*gm.APIError); ok {
 		writeJSON(w, apiErr.StatusCode, map[string]string{"error": operation + ": " + apiErr.Body})
