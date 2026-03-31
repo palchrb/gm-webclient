@@ -67,9 +67,6 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		opt(s)
 	}
 
-	// Restore persisted sessions from disk (survives Docker restarts)
-	s.sessions.RestoreSessions(logger)
-
 	s.registerRoutes()
 	return s
 }

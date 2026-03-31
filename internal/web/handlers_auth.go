@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
@@ -53,14 +52,9 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		req.DeviceName = "Garmin Messenger Web"
 	}
 
-	// Create HermesAuth with session dir for credential persistence across restarts
-	var authOpts []gm.HermesAuthOption
-	authOpts = append(authOpts, gm.WithLogger(s.logger))
-	if s.sessions.fcmDataDir != "" {
-		sessionDir := filepath.Join(s.sessions.fcmDataDir, "sessions", req.Phone)
-		authOpts = append(authOpts, gm.WithSessionDir(sessionDir))
-	}
-	auth := gm.NewHermesAuth(authOpts...)
+	// Auth tokens are kept in server memory only — not persisted to disk.
+	// A Docker restart requires re-login, but no user data is stored on the server.
+	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
 
 	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, req.DeviceName)
 	if err != nil {
