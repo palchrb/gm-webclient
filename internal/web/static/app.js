@@ -138,11 +138,11 @@ async function logout() {
 }
 
 // ─── Conversations ───────────────────────────────────────────────────────────
+let lastConversationCursor = null; // pagination cursor from API
+let hasMoreConversations = false;
+
 async function loadConversations() {
-    // Show cached data immediately (avoids blank screen + reduces API calls).
-    // Cache is long-lived (24h) — real-time updates come via SSE/SignalR,
-    // and we do one background refresh per page load to catch anything missed.
-    const cached = cache.get('conversations'); // no TTL — show cached instantly, always refresh below
+    const cached = cache.get('conversations');
     const cachedMembers = cache.get('members');
     const cachedNames = cache.get('memberNames');
 
@@ -153,20 +153,50 @@ async function loadConversations() {
         renderConversations();
     }
 
-    // One background refresh per page load to catch anything missed while offline
     try {
-        const resp = await api('/api/conversations?limit=500');
+        const resp = await api('/api/conversations');
         state.conversations = (resp.conversations || []).sort(
             (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
         );
+        lastConversationCursor = resp.lastConversationId || null;
+        hasMoreConversations = !!lastConversationCursor;
         cache.set('conversations', state.conversations);
         renderConversations();
-        // Only fetch members we don't already have cached
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
         }
     } catch (e) {
         console.error('Failed to load conversations:', e);
+    }
+}
+
+async function loadMoreConversations() {
+    if (!lastConversationCursor) return;
+    try {
+        const resp = await api(`/api/conversations?after=${lastConversationCursor}`);
+        const more = resp.conversations || [];
+        if (more.length === 0) {
+            hasMoreConversations = false;
+            renderConversations();
+            return;
+        }
+        // Deduplicate and append
+        const existing = new Set(state.conversations.map(c => c.conversationId));
+        for (const conv of more) {
+            if (!existing.has(conv.conversationId)) {
+                state.conversations.push(conv);
+            }
+        }
+        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
+        lastConversationCursor = resp.lastConversationId || null;
+        hasMoreConversations = !!lastConversationCursor;
+        cache.set('conversations', state.conversations);
+        renderConversations();
+        for (const conv of more) {
+            loadMembers(conv.conversationId);
+        }
+    } catch (e) {
+        console.error('Failed to load more conversations:', e);
     }
 }
 
@@ -741,7 +771,7 @@ function renderConversations() {
         return;
     }
 
-    list.innerHTML = state.conversations.map(conv => {
+    let html = state.conversations.map(conv => {
         const active = conv.conversationId === state.currentConversationId ? 'active' : '';
         const name = getConversationName(conv);
         const initial = name.charAt(0).toUpperCase();
@@ -757,6 +787,12 @@ function renderConversations() {
             </div>
         `;
     }).join('');
+
+    if (hasMoreConversations) {
+        html += `<div class="load-more" onclick="loadMoreConversations()">Load more conversations...</div>`;
+    }
+
+    list.innerHTML = html;
 }
 
 // Detect Garmin ZWS-encoded reaction: \u200b{emoji}\u200b to \u200a{text}\u200a
