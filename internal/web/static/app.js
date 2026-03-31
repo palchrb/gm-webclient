@@ -920,7 +920,7 @@ function renderMessages() {
         const time = formatMessageTime(msg.sentAt || msg.receivedAt);
         const location = getLocationHtml(msg);
         const device = getDeviceLabel(msg);
-        const mediaHtml = getMediaPlaceholder(msg);
+        const mediaHtml = getMediaHtml(msg, state.currentConversationId);
         const transcription = msg.transcription
             ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
 
@@ -1054,9 +1054,25 @@ function getLocationHtml(msg) {
     return `<div class="message-location"><a href="${osmUrl}" target="_blank" rel="noopener">📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}${extra}</a></div>`;
 }
 
-function getMediaPlaceholder(msg) {
+// Cache of media proxy URLs keyed by messageId (survives re-renders)
+const mediaUrlCache = {};
+
+function getMediaHtml(msg, convId) {
     if (!msg.mediaId) return '';
     const msgId = msg.messageId;
+
+    // Check if we already have the URL cached
+    const cachedUrl = mediaUrlCache[msgId];
+    if (cachedUrl) {
+        if (msg.mediaType === 'ImageAvif') {
+            return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" loading="lazy"></div>`;
+        }
+        if (msg.mediaType === 'AudioOgg') {
+            return `<div class="message-audio" id="media-${msgId}"></div>`;
+        }
+    }
+
+    // Not cached yet — show placeholder, will be loaded async
     if (msg.mediaType === 'ImageAvif') {
         return `<div class="message-image-container" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Loading image...</span></div>`;
     }
@@ -1072,12 +1088,26 @@ function loadMediaForMessages() {
 
     for (const msg of state.messages) {
         if (!msg.mediaId) continue;
-        const el = document.getElementById(`media-${msg.messageId}`);
-        if (!el || el.dataset.loaded) continue;
-        el.dataset.loaded = 'true';
+        if (mediaUrlCache[msg.messageId]) {
+            // Already cached — just need to init waveform players (they need JS setup)
+            if (msg.mediaType === 'AudioOgg') {
+                const el = document.getElementById(`media-${msg.messageId}`);
+                if (el && !el.dataset.waveform) {
+                    el.dataset.waveform = 'true';
+                    createWaveformPlayer(el, mediaUrlCache[msg.messageId]);
+                }
+            }
+            continue;
+        }
 
         const url = getMediaProxyUrl(msg, convId);
         if (!url) continue;
+
+        // Cache the URL and render
+        mediaUrlCache[msg.messageId] = url;
+
+        const el = document.getElementById(`media-${msg.messageId}`);
+        if (!el) continue;
 
         if (msg.mediaType === 'ImageAvif') {
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy">`;
