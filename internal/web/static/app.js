@@ -216,7 +216,7 @@ async function selectConversation(convId) {
     }
 
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=50`);
+        const resp = await api(`/api/conversations/${convId}?limit=200`);
         state.messages = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
@@ -365,14 +365,23 @@ function markOptimisticFailed(tempId, errorMsg) {
 }
 
 // Reload the current conversation messages from the server.
-async function reloadCurrentConversation() {
+// Preserves optimistic (sending/sent) messages that aren't in the server response yet.
+async function reloadCurrentConversation(delayMs) {
+    if (delayMs) await new Promise(r => setTimeout(r, delayMs));
     const convId = state.currentConversationId;
     if (!convId) return;
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=50`);
-        state.messages = (resp.messages || []).sort(
+        const resp = await api(`/api/conversations/${convId}?limit=200`);
+        const serverMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
+        // Keep optimistic messages that the server doesn't know about yet
+        const serverIds = new Set(serverMsgs.map(m => m.messageId));
+        const optimistic = state.messages.filter(m =>
+            m._sendState && !serverIds.has(m.messageId)
+        );
+        state.messages = [...serverMsgs, ...optimistic];
+        cache.set('msgs_' + convId, serverMsgs);
         renderMessages();
         scrollToBottom();
     } catch (e) {
@@ -516,8 +525,10 @@ async function sendMediaFile(file, caption) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Reload conversation to get the full message with media URLs
-        reloadCurrentConversation();
+        // Reload after delay to let Garmin propagate the message.
+        // First reload quickly, retry after longer delay if message not visible yet.
+        reloadCurrentConversation(1000);
+        reloadCurrentConversation(4000);
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -1319,7 +1330,7 @@ function autoClosePicker(picker) {
 }
 
 async function sendReaction(messageId, emoji) {
-    document.querySelectorAll('.reaction-picker').forEach(el => el.remove());
+    closeAllPickers();
 
     const msg = state.messages.find(m => m.messageId === messageId);
     if (!msg) return;
@@ -1339,6 +1350,9 @@ async function sendReaction(messageId, emoji) {
                 targetBody,
             }
         });
+        // Reload to show the reaction as a badge on the target message
+        reloadCurrentConversation(1000);
+        reloadCurrentConversation(4000);
     } catch (e) {
         console.error('Failed to send reaction:', e);
     }
