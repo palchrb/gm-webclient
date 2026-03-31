@@ -1,0 +1,16 @@
+services:
+  garmin-web:
+    image: ghcr.io/palchrb/garmin-messenger-web:latest
+    # Or build locally:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.web
+    container_name: garmin-web
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    # No volumes needed - server stores nothing on disk.
+    # Proxy via Caddy/nginx for HTTPS:
+    #   messenger.example.com {
+    #       reverse_proxy garmin-web:8080
+    #   }

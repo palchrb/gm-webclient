@@ -1,0 +1,22 @@
+FROM golang:1-alpine3.23 AS builder
+
+RUN apk add --no-cache git ca-certificates build-base
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN go build -ldflags="-s -w" -o garmin-web ./cmd/garmin-web
+
+FROM alpine:3.23
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /build/garmin-web /usr/bin/garmin-web
+
+EXPOSE 8080
+
+CMD ["/usr/bin/garmin-web", "-addr", ":8080"]
