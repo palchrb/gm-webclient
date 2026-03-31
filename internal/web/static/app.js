@@ -88,10 +88,47 @@ async function logout() {
 // ─── Conversations ───────────────────────────────────────────────────────────
 async function loadConversations() {
     try {
-        const resp = await api('/api/conversations?limit=50');
-        state.conversations = (resp.conversations || []).sort(
-            (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
-        );
+        // Fetch all conversations by paginating until no more are returned.
+        // The Garmin API returns up to `limit` per request; we keep fetching
+        // older pages until we get fewer than the page size.
+        let allConversations = [];
+        let oldestDate = null;
+        const pageSize = 200;
+
+        while (true) {
+            let url = `/api/conversations?limit=${pageSize}`;
+            if (oldestDate) {
+                // Fetch conversations updated before the oldest we've seen
+                url += `&beforeDate=${encodeURIComponent(oldestDate)}`;
+            }
+            const resp = await api(url);
+            const page = resp.conversations || [];
+            if (page.length === 0) break;
+
+            allConversations = allConversations.concat(page);
+
+            // Find the oldest updatedDate in this page for next pagination
+            const dates = page.map(c => new Date(c.updatedDate).getTime()).filter(d => !isNaN(d));
+            if (dates.length > 0) {
+                const minDate = new Date(Math.min(...dates));
+                oldestDate = minDate.toISOString();
+            }
+
+            // If we got fewer than the page size, we've reached the end
+            if (page.length < pageSize) break;
+        }
+
+        // Deduplicate by conversationId (in case of overlap between pages)
+        const seen = new Set();
+        state.conversations = [];
+        for (const conv of allConversations) {
+            if (!seen.has(conv.conversationId)) {
+                seen.add(conv.conversationId);
+                state.conversations.push(conv);
+            }
+        }
+        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
+
         // Load members for each conversation
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
@@ -159,6 +196,24 @@ function deselectConversation() {
     document.getElementById('no-conversation').classList.remove('hidden');
     document.getElementById('conversation-view').classList.add('hidden');
     renderConversations();
+}
+
+async function leaveConversation(convId) {
+    if (!confirm('Leave this conversation? It will be removed from your list.')) return;
+
+    try {
+        await api(`/api/conversations/${convId}/leave`, { method: 'POST' });
+        // Remove from local state
+        state.conversations = state.conversations.filter(c => c.conversationId !== convId);
+        delete state.members[convId];
+        if (state.currentConversationId === convId) {
+            deselectConversation();
+        }
+        renderConversations();
+    } catch (e) {
+        console.error('Failed to leave conversation:', e);
+        alert('Failed to leave conversation: ' + e.message);
+    }
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────

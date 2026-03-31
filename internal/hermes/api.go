@@ -153,6 +153,12 @@ func (api *HermesAPI) MuteConversation(ctx context.Context, conversationID uuid.
 	return api.doPostNoResult(ctx, path, nil, "1.0")
 }
 
+// LeaveConversation removes the current user from a conversation (hides/deletes it).
+func (api *HermesAPI) LeaveConversation(ctx context.Context, conversationID uuid.UUID) error {
+	path := fmt.Sprintf("Conversation/%s/Leave", conversationID)
+	return api.doPostNoResult(ctx, path, nil, "1.0")
+}
+
 // GetConversationMembers returns member details for a conversation.
 func (api *HermesAPI) GetConversationMembers(ctx context.Context, conversationID uuid.UUID) ([]UserInfoModel, error) {
 	var result []UserInfoModel

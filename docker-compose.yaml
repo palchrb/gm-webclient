@@ -11,10 +11,13 @@ services:
       - garmin-web-data:/data
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Restrict login to specific phone numbers (comma-separated, with country code).
+      # Leave empty or unset to allow all phone numbers.
+      # Example: PHONE_WHITELIST=+4712345678,+4787654321
+      - PHONE_WHITELIST=${PHONE_WHITELIST:-}
     command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
     # Volume stores FCM credentials only (Google device IDs for push).
     # Garmin auth tokens are NOT stored on disk.
-    # Set LOG_LEVEL=debug for verbose logging (debug, info, warn, error).
 
 volumes:
   garmin-web-data:

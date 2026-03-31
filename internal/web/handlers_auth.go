@@ -41,6 +41,13 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check phone whitelist
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
+		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", req.Phone)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+
 	if req.DeviceName == "" {
 		req.DeviceName = "Garmin Messenger Web"
 	}

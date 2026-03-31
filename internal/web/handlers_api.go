@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -13,9 +14,21 @@ func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) 
 	session := getSession(r.Context())
 
 	var opts []gm.GetConversationsOption
+
+	limit := 200
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if limit, err := strconv.Atoi(limitStr); err == nil {
-			opts = append(opts, gm.WithLimit(limit))
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			limit = l
+		}
+	}
+	opts = append(opts, gm.WithLimit(limit))
+
+	if beforeStr := r.URL.Query().Get("beforeDate"); beforeStr != "" {
+		if t, err := time.Parse(time.RFC3339, beforeStr); err == nil {
+			opts = append(opts, gm.WithAfterDate(time.Time{}))
+			// The Garmin API uses AfterDate for filtering, but to paginate
+			// backwards we fetch all and filter server-side below.
+			_ = t
 		}
 	}
 
@@ -24,6 +37,20 @@ func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) 
 		handleAPIError(w, err, "get conversations")
 		return
 	}
+
+	// Server-side filtering for beforeDate pagination
+	if beforeStr := r.URL.Query().Get("beforeDate"); beforeStr != "" {
+		if before, err := time.Parse(time.RFC3339, beforeStr); err == nil {
+			filtered := make([]gm.ConversationMetaModel, 0, len(result.Conversations))
+			for _, c := range result.Conversations {
+				if c.UpdatedDate.Before(before) {
+					filtered = append(filtered, c)
+				}
+			}
+			result.Conversations = filtered
+		}
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -176,6 +203,25 @@ func (s *Server) handleGetMediaURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleLeaveConversation(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+
+	convID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation ID"})
+		return
+	}
+
+	s.logger.Debug("Leaving conversation", "conversationId", convID)
+
+	if err := session.API.LeaveConversation(r.Context(), convID); err != nil {
+		handleAPIError(w, err, "leave conversation")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
 }
 
 func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {

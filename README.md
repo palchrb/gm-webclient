@@ -127,6 +127,7 @@ docker run -p 8080:8080 -v garmin-web-data:/data garmin-web
 | `-addr` | `:8080` | HTTP listen address |
 | `-data-dir` | (empty) | Directory for persistent data. Enables FCM push and Web Push notifications. Stores VAPID keys, FCM device credentials, and push subscriptions. |
 | `-log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `-phone-whitelist` | (empty) | Comma-separated list of phone numbers allowed to log in (e.g. `+4712345678,+4787654321`). Also available as `PHONE_WHITELIST` env var. Empty allows all. |
 
 ## Architecture
 
