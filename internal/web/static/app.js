@@ -11,6 +11,39 @@ const state = {
     eventSource: null,
 };
 
+// ─── Local Cache ─────────────────────────────────────────────────────────────
+// Cache conversations and members in localStorage to avoid hammering the
+// Garmin API on every page load. Data is refreshed in the background.
+const cache = {
+    set(key, value) {
+        try {
+            localStorage.setItem('gm_' + key, JSON.stringify({ t: Date.now(), v: value }));
+        } catch (e) { /* quota exceeded or private mode */ }
+    },
+    get(key, maxAgeMs) {
+        try {
+            const raw = localStorage.getItem('gm_' + key);
+            if (!raw) return null;
+            const { t, v } = JSON.parse(raw);
+            if (maxAgeMs && Date.now() - t > maxAgeMs) return null;
+            return v;
+        } catch (e) { return null; }
+    },
+    remove(key) {
+        try { localStorage.removeItem('gm_' + key); } catch (e) {}
+    },
+    clear() {
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith('gm_')) keys.push(k);
+            }
+            keys.forEach(k => localStorage.removeItem(k));
+        } catch (e) {}
+    },
+};
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 async function init() {
     try {
@@ -77,6 +110,7 @@ async function confirmOTP() {
 async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
     if (state.eventSource) state.eventSource.close();
+    cache.clear();
     state.loggedIn = false;
     state.phone = null;
     state.conversations = [];
@@ -87,12 +121,25 @@ async function logout() {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 async function loadConversations() {
+    // Show cached data immediately (avoids blank screen + reduces API calls)
+    const cached = cache.get('conversations', 5 * 60 * 1000); // 5 min
+    const cachedMembers = cache.get('members');
+    const cachedNames = cache.get('memberNames');
+
+    if (cached) {
+        state.conversations = cached;
+        if (cachedMembers) state.members = cachedMembers;
+        if (cachedNames) state.memberNames = cachedNames;
+        renderConversations();
+    }
+
+    // Background refresh from Garmin API
     try {
-        // Fetch with high limit to get all conversations (matches reference impl)
         const resp = await api('/api/conversations?limit=500');
         state.conversations = (resp.conversations || []).sort(
             (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
         );
+        cache.set('conversations', state.conversations);
         renderConversations();
         // Load members in background (don't block rendering)
         for (const conv of state.conversations) {
@@ -100,6 +147,7 @@ async function loadConversations() {
         }
     } catch (e) {
         console.error('Failed to load conversations:', e);
+        // If we have cached data, that's fine — just use it
     }
 }
 
@@ -119,6 +167,9 @@ async function loadMembers(convId) {
                 state.memberNames[m.address] = name;
             }
         }
+        // Persist to cache
+        cache.set('members', state.members);
+        cache.set('memberNames', state.memberNames);
         renderConversations();
         if (state.currentConversationId === convId) {
             renderMessages();
@@ -137,12 +188,20 @@ async function selectConversation(convId) {
     // Close sidebar on mobile
     document.getElementById('sidebar').classList.remove('open');
 
-    // Load messages
+    // Show cached messages immediately, then refresh from API
+    const cachedMsgs = cache.get('msgs_' + convId, 2 * 60 * 1000); // 2 min
+    if (cachedMsgs) {
+        state.messages = cachedMsgs;
+        renderMessages();
+        scrollToBottom();
+    }
+
     try {
         const resp = await api(`/api/conversations/${convId}?limit=50`);
         state.messages = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
+        cache.set('msgs_' + convId, state.messages);
         renderMessages();
         scrollToBottom();
 

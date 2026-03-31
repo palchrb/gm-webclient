@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -72,10 +75,18 @@ func main() {
 		log.Printf("Session TTL: %d days", days)
 	}
 
-	// Encrypted session persistence (opt-in via SESSION_KEY)
-	if sessionKey := os.Getenv("SESSION_KEY"); sessionKey != "" {
-		opts = append(opts, web.WithSessionKey(sessionKey))
-		log.Printf("Encrypted session persistence enabled")
+	// Encrypted session persistence.
+	// If SESSION_KEY is set, use it. Otherwise auto-generate and persist one
+	// in the data dir so sessions survive restarts without manual config.
+	if *dataDir != "" {
+		sessionKey := os.Getenv("SESSION_KEY")
+		if sessionKey == "" {
+			sessionKey = loadOrGenerateSessionKey(*dataDir)
+		}
+		if sessionKey != "" {
+			opts = append(opts, web.WithSessionKey(sessionKey))
+			log.Printf("Encrypted session persistence enabled")
+		}
 	}
 
 	srv := web.NewServer(logger, *dataDir, vapidKeys, opts...)
@@ -83,6 +94,37 @@ func main() {
 	if err := srv.ListenAndServe(*addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// loadOrGenerateSessionKey reads or creates a random session encryption key
+// in the data directory. This means sessions survive restarts automatically
+// without requiring the user to set SESSION_KEY manually.
+func loadOrGenerateSessionKey(dataDir string) string {
+	keyPath := filepath.Join(dataDir, "session_key")
+	data, err := os.ReadFile(keyPath)
+	if err == nil && len(data) > 0 {
+		return strings.TrimSpace(string(data))
+	}
+
+	// Generate a random 32-byte key
+	keyBytes := make([]byte, 32)
+	if _, err := rand.Read(keyBytes); err != nil {
+		log.Printf("Warning: could not generate session key: %v", err)
+		return ""
+	}
+	key := hex.EncodeToString(keyBytes)
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Printf("Warning: could not create data dir for session key: %v", err)
+		return ""
+	}
+	if err := os.WriteFile(keyPath, []byte(key), 0o600); err != nil {
+		log.Printf("Warning: could not save session key: %v", err)
+		return ""
+	}
+
+	log.Printf("Generated new session encryption key in %s", keyPath)
+	return key
 }
 
 func parsePhoneList(s string) []string {
