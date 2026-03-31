@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -12,18 +13,34 @@ import (
 func (s *Server) handleGetConversations(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 
-	limit := 500
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			limit = l
+	const pageSize = 500
+	// Use AfterDate=2010-01-01 to ensure ALL conversations are returned,
+	// not just recently-updated ones. The Conversation/Updated endpoint
+	// may default to a recent time window without this.
+	epoch := time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts := []gm.GetConversationsOption{
+		gm.WithLimit(pageSize),
+		gm.WithAfterDate(epoch),
+	}
+
+	// Cursor-based pagination: pass lastConversationId from previous response
+	if cursor := r.URL.Query().Get("after"); cursor != "" {
+		if id, err := uuid.Parse(cursor); err == nil {
+			opts = append(opts, gm.WithLastConversationID(id))
 		}
 	}
 
-	result, err := session.API.GetConversations(r.Context(), gm.WithLimit(limit))
+	result, err := session.API.GetConversations(r.Context(), opts...)
 	if err != nil {
 		handleAPIError(w, err, "get conversations")
 		return
 	}
+
+	s.logger.Debug("Fetched conversations",
+		"count", len(result.Conversations),
+		"lastConversationId", result.LastConversationID,
+	)
+
 	writeJSON(w, http.StatusOK, result)
 }
 

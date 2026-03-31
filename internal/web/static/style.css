@@ -273,6 +273,17 @@ body {
     flex-shrink: 0;
 }
 
+.load-more {
+    padding: 12px 16px;
+    text-align: center;
+    color: var(--accent-light);
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+}
+
+.load-more:hover { background: var(--bg-hover); }
+
 /* ─── Message Area ─── */
 .message-area {
     flex: 1;
@@ -466,6 +477,7 @@ body {
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     align-items: center;
+    position: relative;
 }
 
 .composer input[type="text"] {
@@ -705,11 +717,12 @@ body {
 }
 
 .composer-emoji-picker {
-    bottom: auto;
-    top: auto;
     bottom: 100%;
     left: 0;
-    right: auto;
+    right: 0;
+    margin-bottom: 8px;
+    max-width: none;
+    max-height: 250px;
 }
 
 .message.received .reaction-picker { left: 0; right: auto; }

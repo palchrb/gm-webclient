@@ -22,8 +22,16 @@ func main() {
 	sessionDays := flag.Int("session-days", 7, "Number of days a login session/cookie is valid")
 	flag.Parse()
 
+	// Log level: flag takes precedence, then env var, then default "info"
+	logLevelStr := *logLevel
+	if logLevelStr == "info" {
+		if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
+			logLevelStr = envLevel
+		}
+	}
+
 	var level slog.Level
-	switch *logLevel {
+	switch strings.ToLower(logLevelStr) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":

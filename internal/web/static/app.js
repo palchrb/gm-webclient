@@ -138,11 +138,11 @@ async function logout() {
 }
 
 // ─── Conversations ───────────────────────────────────────────────────────────
+let lastConversationCursor = null; // pagination cursor from API
+let hasMoreConversations = false;
+
 async function loadConversations() {
-    // Show cached data immediately (avoids blank screen + reduces API calls).
-    // Cache is long-lived (24h) — real-time updates come via SSE/SignalR,
-    // and we do one background refresh per page load to catch anything missed.
-    const cached = cache.get('conversations'); // no TTL — show cached instantly, always refresh below
+    const cached = cache.get('conversations');
     const cachedMembers = cache.get('members');
     const cachedNames = cache.get('memberNames');
 
@@ -153,20 +153,50 @@ async function loadConversations() {
         renderConversations();
     }
 
-    // One background refresh per page load to catch anything missed while offline
     try {
-        const resp = await api('/api/conversations?limit=500');
+        const resp = await api('/api/conversations');
         state.conversations = (resp.conversations || []).sort(
             (a, b) => new Date(b.updatedDate) - new Date(a.updatedDate)
         );
+        lastConversationCursor = resp.lastConversationId || null;
+        hasMoreConversations = !!lastConversationCursor;
         cache.set('conversations', state.conversations);
         renderConversations();
-        // Only fetch members we don't already have cached
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
         }
     } catch (e) {
         console.error('Failed to load conversations:', e);
+    }
+}
+
+async function loadMoreConversations() {
+    if (!lastConversationCursor) return;
+    try {
+        const resp = await api(`/api/conversations?after=${lastConversationCursor}`);
+        const more = resp.conversations || [];
+        if (more.length === 0) {
+            hasMoreConversations = false;
+            renderConversations();
+            return;
+        }
+        // Deduplicate and append
+        const existing = new Set(state.conversations.map(c => c.conversationId));
+        for (const conv of more) {
+            if (!existing.has(conv.conversationId)) {
+                state.conversations.push(conv);
+            }
+        }
+        state.conversations.sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
+        lastConversationCursor = resp.lastConversationId || null;
+        hasMoreConversations = !!lastConversationCursor;
+        cache.set('conversations', state.conversations);
+        renderConversations();
+        for (const conv of more) {
+            loadMembers(conv.conversationId);
+        }
+    } catch (e) {
+        console.error('Failed to load more conversations:', e);
     }
 }
 
@@ -212,7 +242,7 @@ async function selectConversation(convId) {
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
-        scrollToBottom();
+        scrollToBottom(true);
     }
 
     try {
@@ -222,7 +252,7 @@ async function selectConversation(convId) {
         );
         cache.set('msgs_' + convId, state.messages);
         renderMessages();
-        scrollToBottom();
+        scrollToBottom(true);
 
         // Mark last message as read
         if (state.messages.length > 0) {
@@ -341,7 +371,7 @@ function addOptimisticMessage(convId, messageId, body, sendState) {
         _sendState: sendState || 'sent',
     });
     renderMessages();
-    scrollToBottom();
+    scrollToBottom(true); // force: user just sent
 }
 
 // Replace a temporary optimistic message with the real server ID.
@@ -386,6 +416,37 @@ async function reloadCurrentConversation(delayMs) {
         scrollToBottom();
     } catch (e) {
         console.error('Failed to reload conversation:', e);
+    }
+}
+
+async function loadOlderMessages() {
+    const convId = state.currentConversationId;
+    if (!convId || state.messages.length === 0) return;
+    // Find the oldest non-optimistic message ID
+    const oldest = state.messages.find(m => !m._sendState);
+    if (!oldest) return;
+
+    const container = document.getElementById('messages');
+    const scrollHeightBefore = container.scrollHeight;
+
+    try {
+        const resp = await api(`/api/conversations/${convId}?limit=200&olderThanId=${oldest.messageId}`);
+        const older = (resp.messages || []).sort(
+            (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+        );
+        if (older.length === 0) return;
+        // Prepend older messages, deduplicate
+        const existing = new Set(state.messages.map(m => m.messageId));
+        const newMsgs = older.filter(m => !existing.has(m.messageId));
+        state.messages = [...newMsgs, ...state.messages];
+        cache.set('msgs_' + convId, state.messages);
+        renderMessages();
+        // Maintain scroll position (don't jump)
+        requestAnimationFrame(() => {
+            container.scrollTop = container.scrollHeight - scrollHeightBefore;
+        });
+    } catch (e) {
+        console.error('Failed to load older messages:', e);
     }
 }
 
@@ -741,7 +802,7 @@ function renderConversations() {
         return;
     }
 
-    list.innerHTML = state.conversations.map(conv => {
+    let html = state.conversations.map(conv => {
         const active = conv.conversationId === state.currentConversationId ? 'active' : '';
         const name = getConversationName(conv);
         const initial = name.charAt(0).toUpperCase();
@@ -757,6 +818,12 @@ function renderConversations() {
             </div>
         `;
     }).join('');
+
+    if (hasMoreConversations) {
+        html += `<div class="load-more" onclick="loadMoreConversations()">Load more conversations...</div>`;
+    }
+
+    list.innerHTML = html;
 }
 
 // Detect Garmin ZWS-encoded reaction: \u200b{emoji}\u200b to \u200a{text}\u200a
@@ -812,6 +879,12 @@ function renderMessages() {
 
     // Second pass: render messages, skipping reaction messages
     let html = '';
+
+    // "Load older messages" button at top
+    if (state.messages.length >= 20) {
+        html += `<div class="load-more" onclick="loadOlderMessages()">Load older messages...</div>`;
+    }
+
     let lastDate = '';
 
     for (const msg of state.messages) {
@@ -1023,21 +1096,18 @@ function createWaveformPlayer(container, audioUrl) {
     const barCount = 40;
     let bars = [];
     let isPlaying = false;
-    let waveformGenerated = false;
 
-    // Create placeholder bars
+    // Create placeholder bars (flat until real waveform loads)
     for (let i = 0; i < barCount; i++) {
         const bar = document.createElement('div');
         bar.className = 'waveform-bar';
-        bar.style.height = (20 + Math.random() * 60) + '%';
+        bar.style.height = '15%';
         barsContainer.appendChild(bar);
         bars.push(bar);
     }
 
-    // Generate real waveform from audio data
-    async function generateWaveform() {
-        if (waveformGenerated) return;
-        waveformGenerated = true;
+    // Generate real waveform immediately from audio data
+    (async function() {
         try {
             const resp = await fetch(audioUrl);
             const arrayBuf = await resp.arrayBuffer();
@@ -1046,34 +1116,39 @@ function createWaveformPlayer(container, audioUrl) {
             const channelData = decoded.getChannelData(0);
             audioCtx.close();
 
+            // Use RMS (root mean square) per bar for more accurate waveform
             const samplesPerBar = Math.floor(channelData.length / barCount);
             const amplitudes = [];
             let maxAmp = 0;
             for (let i = 0; i < barCount; i++) {
-                let sum = 0;
+                let sumSq = 0;
                 const start = i * samplesPerBar;
                 for (let j = start; j < start + samplesPerBar && j < channelData.length; j++) {
-                    sum += Math.abs(channelData[j]);
+                    sumSq += channelData[j] * channelData[j];
                 }
-                const avg = sum / samplesPerBar;
-                amplitudes.push(avg);
-                if (avg > maxAmp) maxAmp = avg;
+                const rms = Math.sqrt(sumSq / samplesPerBar);
+                amplitudes.push(rms);
+                if (rms > maxAmp) maxAmp = rms;
             }
-            // Normalize and set bar heights (min 10%, max 100%)
             for (let i = 0; i < barCount; i++) {
                 const normalized = maxAmp > 0 ? amplitudes[i] / maxAmp : 0;
-                bars[i].style.height = (10 + normalized * 90) + '%';
+                bars[i].style.height = Math.max(8, normalized * 100) + '%';
             }
+
+            // Set duration from decoded audio
+            const dur = decoded.duration;
+            const mins = Math.floor(dur / 60);
+            const secs = Math.floor(dur % 60);
+            timeDisplay.textContent = mins + ':' + secs.toString().padStart(2, '0');
         } catch (e) {
             // Keep placeholder bars on error
         }
-    }
+    })();
 
     playBtn.onclick = () => {
         if (isPlaying) {
             audio.pause();
         } else {
-            // Pause any other playing audio
             document.querySelectorAll('.waveform-player.playing').forEach(p => {
                 if (p !== player) {
                     const otherBtn = p.querySelector('.waveform-play-btn');
@@ -1081,7 +1156,6 @@ function createWaveformPlayer(container, audioUrl) {
                 }
             });
             audio.play();
-            generateWaveform();
         }
     };
 
@@ -1202,11 +1276,21 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-function scrollToBottom() {
+// Only auto-scroll if user is already near the bottom (within 150px).
+// This prevents jumping around when reading history.
+function scrollToBottom(force) {
     const container = document.getElementById('messages');
     requestAnimationFrame(() => {
-        container.scrollTop = container.scrollHeight;
+        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+        if (force || nearBottom) {
+            container.scrollTop = container.scrollHeight;
+        }
     });
+}
+
+// Force-scroll (used when selecting a conversation or sending)
+function scrollToBottomForce() {
+    scrollToBottom(true);
 }
 
 function showChatView() {
@@ -1324,9 +1408,17 @@ function closeAllPickers() {
 }
 
 function autoClosePicker(picker) {
-    setTimeout(() => document.addEventListener('click', function close(ev) {
-        if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); }
-    }), 0);
+    // Delay adding the listener so the opening click doesn't immediately close it
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.addEventListener('click', function close(ev) {
+                if (!picker.contains(ev.target) && !ev.target.closest('.composer-btn')) {
+                    picker.remove();
+                    document.removeEventListener('click', close);
+                }
+            });
+        });
+    });
 }
 
 async function sendReaction(messageId, emoji) {
