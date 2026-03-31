@@ -1,15 +1,24 @@
 services:
-  matrix-garmin-messenger:
-    image: ghcr.io/yourusername/matrix-garmin-messenger:latest
+  garmin-web:
+    image: ghcr.io/palchrb/gm-webclient:latest
     # Or build locally:
     # build: .
-    container_name: matrix-garmin-messenger
+    container_name: garmin-web
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
-      - ./data:/data
+      - garmin-web-data:/data
     environment:
-      - UID=1337
-      - GID=1337
-    # Only needed if your homeserver can't reach the container on the Docker network.
-    # ports:
-    #   - "29340:29340"
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
+    # Volume stores FCM credentials only (Google device IDs for push).
+    # Garmin auth tokens are NOT stored on disk.
+    # Set LOG_LEVEL=debug for verbose logging (debug, info, warn, error).
+
+volumes:
+  garmin-web-data:
+    # Proxy via Caddy/nginx for HTTPS:
+    #   messenger.example.com {
+    #       reverse_proxy garmin-web:8080
+    #   }

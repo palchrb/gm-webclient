@@ -1,6 +1,0 @@
-# Directory where per-user Garmin Messenger sessions are stored.
-# Each login gets a subdirectory named after its login ID (phone number).
-# The HermesAuth library saves credentials here as hermes_credentials.json.
-# Use an absolute path or a path relative to the bridge working directory.
-# Defaults to "sessions" (relative to working directory).
-sessions_dir: sessions
