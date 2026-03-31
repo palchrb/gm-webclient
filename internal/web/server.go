@@ -57,6 +57,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/messages/send", s.requireSession(s.handleSendMessage))
 	s.mux.HandleFunc("POST /api/messages/{convId}/{msgId}/read", s.requireSession(s.handleMarkAsRead))
 	s.mux.HandleFunc("GET /api/media", s.requireSession(s.handleGetMediaURL))
+	s.mux.HandleFunc("GET /api/media/proxy", s.requireSession(s.handleProxyMedia))
+	s.mux.HandleFunc("POST /api/media/send", s.requireSession(s.handleSendMedia))
 	s.mux.HandleFunc("POST /api/chat/new", s.requireSession(s.handleNewChat))
 
 	// Push notification endpoints

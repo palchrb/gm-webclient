@@ -11,8 +11,12 @@ services:
       - "8080:8080"
     volumes:
       - garmin-web-data:/data
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data", "-log-level", "${LOG_LEVEL:-info}"]
     # Volume stores FCM credentials only (Google device IDs for push).
     # Garmin auth tokens are NOT stored on disk.
+    # Set LOG_LEVEL=debug for verbose logging (debug, info, warn, error).
 
 volumes:
   garmin-web-data:
