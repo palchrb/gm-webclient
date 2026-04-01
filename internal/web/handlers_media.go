@@ -181,25 +181,33 @@ func serveMedia(w http.ResponseWriter, data []byte, mediaType gm.MediaType) {
 // ─── ffmpeg conversion (matches reference implementation) ────────────────────
 
 func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
-	srcFormat, err := mimeToFFmpegFormat(srcMime)
-	if err != nil {
-		return nil, err
-	}
 	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
 	}
+
+	// Write input to temp file so ffmpeg can auto-detect the format
+	// (more reliable than guessing demuxer from MIME type)
+	tmpIn, err := os.CreateTemp("", "garmin-img-in-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp input: %w", err)
+	}
+	tmpInPath := tmpIn.Name()
+	tmpIn.Write(src)
+	tmpIn.Close()
+	defer os.Remove(tmpInPath)
+
 	tmpOut, err := os.CreateTemp("", "garmin-avif-*.avif")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp file: %w", err)
+		return nil, fmt.Errorf("creating temp output: %w", err)
 	}
-	tmpPath := tmpOut.Name()
+	tmpOutPath := tmpOut.Name()
 	tmpOut.Close()
-	defer os.Remove(tmpPath)
+	defer os.Remove(tmpOutPath)
 
 	var errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
-		"-f", srcFormat, "-i", "pipe:0",
+		"-i", tmpInPath,
 		"-vf", "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:flags=lanczos",
 		"-frames:v", "1",
 		"-c:v", "libaom-av1",
@@ -207,27 +215,33 @@ func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 		"-cpu-used", "8",
 		"-pix_fmt", "yuv444p",
 		"-still-picture", "1",
-		"-y", tmpPath,
+		"-y", tmpOutPath,
 	)
-	cmd.Stdin = bytes.NewReader(src)
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("image to AVIF: %w\n%s", err, errBuf.String())
 	}
-	return os.ReadFile(tmpPath)
+	return os.ReadFile(tmpOutPath)
 }
 
 func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
-	srcFormat, err := mimeToFFmpegFormat(srcMime)
-	if err != nil {
-		return nil, err
-	}
 	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
 	}
+
+	// Write input to temp file so ffmpeg can auto-detect the format
+	tmpIn, err := os.CreateTemp("", "garmin-audio-in-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp input: %w", err)
+	}
+	tmpInPath := tmpIn.Name()
+	tmpIn.Write(src)
+	tmpIn.Close()
+	defer os.Remove(tmpInPath)
+
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
-		"-f", srcFormat, "-i", "pipe:0",
+		"-i", tmpInPath,
 		"-t", "30",
 		"-ar", "48000",
 		"-ac", "1",
@@ -235,7 +249,6 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-b:a", "16k",
 		"-f", "ogg", "pipe:1",
 	)
-	cmd.Stdin = bytes.NewReader(src)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -243,33 +256,6 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		return nil, fmt.Errorf("audio to OGG: %w\n%s", err, errBuf.String())
 	}
 	return out.Bytes(), nil
-}
-
-func mimeToFFmpegFormat(mime string) (string, error) {
-	switch strings.Split(mime, ";")[0] {
-	case "image/jpeg", "image/jpg":
-		return "mjpeg", nil
-	case "image/png":
-		return "png_pipe", nil
-	case "image/webp":
-		return "webp_pipe", nil
-	case "image/avif":
-		return "avif", nil
-	case "audio/ogg":
-		return "ogg", nil
-	case "audio/mpeg", "audio/mp3":
-		return "mp3", nil
-	case "audio/mp4", "audio/m4a":
-		return "mp4", nil
-	case "audio/aac":
-		return "aac", nil
-	case "audio/wav", "audio/wave":
-		return "wav", nil
-	case "audio/webm":
-		return "webm", nil
-	default:
-		return "", fmt.Errorf("unsupported media type: %s", mime)
-	}
 }
 
 func isImageMIME(mime string) bool {
