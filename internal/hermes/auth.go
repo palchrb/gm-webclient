@@ -525,7 +525,7 @@ func (a *HermesAuth) doRequest(ctx context.Context, method, url string, headers 
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	a.logResponse(resp)
-	a.logger.Debug("  Response body", "length", len(respBody), "json", truncate(string(respBody), 2000))
+	a.logger.Debug("  Response body", "length", len(respBody), "json", truncate(string(respBody), 500))
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	return resp, nil
@@ -533,24 +533,13 @@ func (a *HermesAuth) doRequest(ctx context.Context, method, url string, headers 
 
 func (a *HermesAuth) logRequest(method, url string, headers http.Header, body []byte) {
 	a.logger.Debug(">>> "+method, "url", url)
-	for k, v := range headers {
-		val := strings.Join(v, ", ")
-		if len(val) > 120 {
-			a.logger.Debug("  Request header", "key", k, "value", val[:60]+"..."+val[len(val)-20:])
-		} else {
-			a.logger.Debug("  Request header", "key", k, "value", val)
-		}
-	}
 	if body != nil {
-		a.logger.Debug("  Request body", "json", string(body))
+		a.logger.Debug("  Request body", "json", truncate(string(body), 500))
 	}
 }
 
 func (a *HermesAuth) logResponse(resp *http.Response) {
 	a.logger.Debug("<<< Response", "status", resp.StatusCode, "url", resp.Request.URL.String())
-	for k, v := range resp.Header {
-		a.logger.Debug("  Response header", "key", k, "value", strings.Join(v, ", "))
-	}
 }
 
 func checkResponse(resp *http.Response) error {

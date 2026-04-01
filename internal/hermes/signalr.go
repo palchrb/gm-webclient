@@ -391,15 +391,32 @@ func (a *slogAdapter) Log(keyVals ...interface{}) error {
 	if len(keyVals) == 0 {
 		return nil
 	}
-	// go-kit/log: all elements are key-value pairs.
-	// Skip keys slog already manages (level, ts, caller).
+	// Filter out noisy SignalR messages that flood the debug log:
+	// - Heartbeat pings (type:6)
+	// - Raw byte array dumps from UnmarshalArgument
+	// - Repetitive event=read/write for pings
+	for i := 0; i+1 < len(keyVals); i += 2 {
+		key := fmt.Sprint(keyVals[i])
+		val := fmt.Sprint(keyVals[i+1])
+		if key == "message" && (val == "signalr.hubMessage{Type:6}" || val == `{"type":6}` || val == `{"type":6}\x1e`) {
+			return nil // skip heartbeat
+		}
+		if key == "event" && (val == "UnmarshalArgument") {
+			return nil // skip raw byte dumps
+		}
+	}
 	var attrs []any
 	for i := 0; i+1 < len(keyVals); i += 2 {
 		key := fmt.Sprint(keyVals[i])
 		if key == "level" || key == "ts" || key == "caller" {
 			continue
 		}
-		attrs = append(attrs, key, keyVals[i+1])
+		// Truncate long values (byte arrays, raw JSON)
+		val := keyVals[i+1]
+		if s, ok := val.(string); ok && len(s) > 200 {
+			val = s[:200] + "..."
+		}
+		attrs = append(attrs, key, val)
 	}
 	a.logger.Debug("signalr", attrs...)
 	return nil

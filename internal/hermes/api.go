@@ -657,29 +657,15 @@ func (api *HermesAPI) doMutate(ctx context.Context, method, path string, reqBody
 
 func (api *HermesAPI) logRequest(method, url string, headers http.Header, body []byte) {
 	api.logger.Debug(">>> "+method, "url", url)
-	for k, v := range headers {
-		val := v[0]
-		if len(v) > 1 {
-			val = fmt.Sprintf("%v", v)
-		}
-		if len(val) > 120 {
-			api.logger.Debug("  Request header", "key", k, "value", val[:60]+"..."+val[len(val)-20:])
-		} else {
-			api.logger.Debug("  Request header", "key", k, "value", val)
-		}
-	}
 	if body != nil {
-		api.logger.Debug("  Request body", "json", truncate(string(body), 2000))
+		api.logger.Debug("  Request body", "json", truncate(string(body), 500))
 	}
 }
 
 func (api *HermesAPI) logResponse(resp *http.Response, body []byte) {
 	api.logger.Debug("<<< Response", "status", resp.StatusCode, "url", resp.Request.URL.String(), "bytes", len(body))
-	for k, v := range resp.Header {
-		api.logger.Debug("  Response header", "key", k, "value", v[0])
-	}
 	if len(body) > 0 {
-		api.logger.Debug("  Response body", "json", truncate(string(body), 2000))
+		api.logger.Debug("  Response body", "json", truncate(string(body), 500))
 	}
 }
 
