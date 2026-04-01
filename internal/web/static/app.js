@@ -651,16 +651,17 @@ async function startRecording() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         // Pick the best supported audio format for recording.
-        // Firefox/Chrome: audio/webm;codecs=opus (best)
-        // Safari: audio/mp4 or audio/aac (no webm support)
+        // Matches gomuks priority: ogg/opus first (Firefox native),
+        // then webm/opus (Chrome), then mp4 (Safari).
         let mimeType = '';
         let fileExt = '';
         for (const [mime, ext] of [
+            ['audio/ogg; codecs=opus', 'ogg'],
+            ['audio/ogg;codecs=opus', 'ogg'],
             ['audio/webm;codecs=opus', 'webm'],
             ['audio/webm', 'webm'],
             ['audio/mp4', 'mp4'],
             ['audio/aac', 'aac'],
-            ['audio/ogg;codecs=opus', 'ogg'],
         ]) {
             if (MediaRecorder.isTypeSupported(mime)) {
                 mimeType = mime;
