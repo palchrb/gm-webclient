@@ -101,15 +101,15 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Subscribe to the shared SSE broker
 	ch := acct.SSE.Subscribe()
-	s.logger.Info("SSE subscriber connected",
+	s.logger.Info("SSE browser tab connected",
 		"phone", acct.Phone,
-		"subscribers", acct.SSE.SubscriberCount(),
+		"activeTabs", acct.SSE.SubscriberCount(),
 	)
 	defer func() {
 		acct.SSE.Unsubscribe(ch)
-		s.logger.Info("SSE subscriber disconnected",
+		s.logger.Info("SSE browser tab disconnected",
 			"phone", acct.Phone,
-			"subscribers", acct.SSE.SubscriberCount(),
+			"activeTabs", acct.SSE.SubscriberCount(),
 		)
 	}()
 
