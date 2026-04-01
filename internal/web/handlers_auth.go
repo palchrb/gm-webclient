@@ -49,7 +49,7 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.DeviceName == "" {
-		req.DeviceName = "Garmin Messenger Web"
+		req.DeviceName = "Garmin Messenger"
 	}
 
 	// Auth tokens are kept in server memory only — not persisted to disk.

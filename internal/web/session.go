@@ -346,7 +346,7 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.logger.Info("Session removed", "phone", phone, "accountRemoved", !accountInUse)
 }
 
-// stopAccount shuts down all connections for an account.
+// stopAccount shuts down all connections for an account and deregisters with Garmin.
 func (sm *SessionManager) stopAccount(acct *UserAccount) {
 	acct.SignalR.Stop()
 	if acct.signalRCancel != nil {
@@ -355,6 +355,19 @@ func (sm *SessionManager) stopAccount(acct *UserAccount) {
 	if acct.fcmCancel != nil {
 		acct.fcmCancel()
 	}
+
+	// Deregister with Garmin so the app instance doesn't pile up
+	// in the user's device list on the iOS/Android Garmin Messenger app.
+	if acct.Auth.InstanceID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := acct.Auth.DeleteAppRegistration(ctx, acct.Auth.InstanceID); err != nil {
+			sm.logger.Warn("Failed to deregister with Garmin on logout", "phone", acct.Phone, "error", err)
+		} else {
+			sm.logger.Info("Deregistered with Garmin", "phone", acct.Phone)
+		}
+	}
+
 	sm.logger.Info("Account stopped", "phone", acct.Phone)
 }
 

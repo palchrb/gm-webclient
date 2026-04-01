@@ -312,7 +312,7 @@ func (a *HermesAuth) UpdatePnsHandle(ctx context.Context, pnsHandle string) erro
 	body := UpdateAppPnsHandleBody{
 		PnsHandle:      pnsHandle,
 		PnsEnvironment: PnsEnvironment,
-		AppDescription: "garmin-messenger",
+		AppDescription: "Garmin Messenger",
 	}
 	bodyBytes, _ := json.Marshal(body)
 

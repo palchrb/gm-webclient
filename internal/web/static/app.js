@@ -603,9 +603,7 @@ async function sendMediaFile(file, caption) {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
         // Reload after delay to let Garmin propagate the message.
-        // First reload quickly, retry after longer delay if message not visible yet.
-        reloadCurrentConversation(1000);
-        reloadCurrentConversation(4000);
+        reloadCurrentConversation(2000);
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -1067,7 +1065,7 @@ function getMediaHtml(msg, convId) {
     const cachedUrl = mediaUrlCache[msgId];
     if (cachedUrl) {
         if (msg.mediaType === 'ImageAvif') {
-            return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" loading="lazy"></div>`;
+            return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
         }
         if (msg.mediaType === 'AudioOgg') {
             return `<div class="message-audio" id="media-${msgId}"></div>`;
@@ -1511,8 +1509,7 @@ async function sendReaction(messageId, emoji) {
             }
         });
         // Reload to show the reaction as a badge on the target message
-        reloadCurrentConversation(1000);
-        reloadCurrentConversation(4000);
+        reloadCurrentConversation(2000);
     } catch (e) {
         console.error('Failed to send reaction:', e);
     }
