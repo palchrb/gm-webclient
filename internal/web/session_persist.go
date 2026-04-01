@@ -177,12 +177,11 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 
 			validatedPhones[entry.Phone] = true
 			restored++
-			sm.logger.Info("Restored session (primary)", "phone", entry.Phone)
+			sm.logger.Info("Restored browser cookie (new account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
 			continue
 		}
 
-		// Additional session for an already-validated phone — just create session
-		// (account already exists, getOrCreateAccount will reuse it without restarting)
+		// Additional browser cookie for an already-validated phone
 		session, err := sm.CreateSession(entry.Phone,
 			sm.accounts[entry.Phone].Auth, logger)
 		if err != nil {
@@ -196,7 +195,7 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 		sm.mu.Unlock()
 
 		restored++
-		sm.logger.Info("Restored session (additional)", "phone", entry.Phone)
+		sm.logger.Info("Restored browser cookie (existing account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
 	}
 
 	return restored
