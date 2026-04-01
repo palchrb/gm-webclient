@@ -101,7 +101,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Subscribe to the shared SSE broker
 	ch := acct.SSE.Subscribe()
-	defer acct.SSE.Unsubscribe(ch)
+	s.logger.Info("SSE subscriber connected",
+		"phone", acct.Phone,
+		"subscribers", acct.SSE.SubscriberCount(),
+	)
+	defer func() {
+		acct.SSE.Unsubscribe(ch)
+		s.logger.Info("SSE subscriber disconnected",
+			"phone", acct.Phone,
+			"subscribers", acct.SSE.SubscriberCount(),
+		)
+	}()
 
 	writeSSEEvent(w, "connected", nil)
 	flusher.Flush()
