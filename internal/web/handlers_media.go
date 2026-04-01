@@ -176,10 +176,12 @@ func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 		"-hide_banner", "-loglevel", "error",
 		"-f", srcFormat, "-i", "pipe:0",
 		"-vf", "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:flags=lanczos",
+		"-frames:v", "1",
 		"-c:v", "libaom-av1",
 		"-crf", "30", "-b:v", "0",
 		"-cpu-used", "6",
 		"-pix_fmt", "yuv444p",
+		"-still-picture", "1",
 		"-y", tmpPath,
 	)
 	cmd.Stdin = bytes.NewReader(src)
