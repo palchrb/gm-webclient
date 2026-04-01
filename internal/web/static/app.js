@@ -861,7 +861,7 @@ function renderMessages() {
     }
 
     // First pass: collect reactions and map them to target messages.
-    // Garmin matches reactions by quoted body text to the most recent message.
+    // Match by body text, preferring the message closest in time to the reaction.
     const reactions = {}; // messageId -> [{emoji, from}]
     const reactionMsgIds = new Set();
 
@@ -870,15 +870,25 @@ function renderMessages() {
         const r = extractReaction(msg);
         if (!r) continue;
         reactionMsgIds.add(msg.messageId);
-        // Find target: most recent message whose body matches r.targetText
+
+        // Find target: message whose body matches, closest in time to the reaction
+        const reactionTime = new Date(msg.sentAt || msg.receivedAt || 0).getTime();
         let target = null;
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-            const candidate = state.messages[i];
+        let bestTimeDiff = Infinity;
+
+        for (const candidate of state.messages) {
             if (candidate.messageId === msg.messageId) continue;
+            if (isReactionMessage(candidate)) continue;
             const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-            if (candidateBody === r.targetText) {
+            if (candidateBody !== r.targetText) continue;
+
+            const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
+            // Prefer messages BEFORE the reaction (reaction should be after its target)
+            // but also consider messages slightly after (in case of clock skew)
+            const diff = Math.abs(reactionTime - candidateTime);
+            if (diff < bestTimeDiff) {
+                bestTimeDiff = diff;
                 target = candidate;
-                break;
             }
         }
         if (target) {
@@ -936,11 +946,10 @@ function renderMessages() {
         const errorHtml = msg._errorMsg
             ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
 
-        // Render reaction badges
-        const msgReactions = reactions[msg.messageId] || [];
+        // Render reaction badges (merge parsed reactions + optimistic ones)
+        const msgReactions = [...(reactions[msg.messageId] || []), ...(msg._reactions || [])];
         let reactionsHtml = '';
         if (msgReactions.length > 0) {
-            // Group by emoji and count
             const counts = {};
             for (const r of msgReactions) {
                 counts[r.emoji] = (counts[r.emoji] || 0) + 1;
@@ -1082,16 +1091,18 @@ function getMediaHtml(msg, convId) {
     return '';
 }
 
+// Only processes messages that need async media loading or waveform init.
+// Cached images are already rendered inline by getMediaHtml() — skipped here.
 function loadMediaForMessages() {
     const convId = state.currentConversationId;
     if (!convId) return;
 
-    const container = document.getElementById('messages');
-
     for (const msg of state.messages) {
         if (!msg.mediaId) continue;
+
         if (mediaUrlCache[msg.messageId]) {
-            // Already cached — just need to init waveform players
+            // Image already rendered inline by getMediaHtml(). Only waveform
+            // players need JS init after a re-render (they lose their state).
             if (msg.mediaType === 'AudioOgg') {
                 const el = document.getElementById(`media-${msg.messageId}`);
                 if (el && !el.dataset.waveform) {
@@ -1102,6 +1113,7 @@ function loadMediaForMessages() {
             continue;
         }
 
+        // First time seeing this media — fetch URL and render
         const url = getMediaProxyUrl(msg, convId);
         if (!url) continue;
 
@@ -1110,11 +1122,8 @@ function loadMediaForMessages() {
         const el = document.getElementById(`media-${msg.messageId}`);
         if (!el) continue;
 
-        // Preserve scroll position when inserting media above viewport
-        const scrollBottom = container.scrollHeight - container.scrollTop;
-
         if (msg.mediaType === 'ImageAvif') {
-            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy" onload="stabilizeScroll()">`;
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
             createWaveformPlayer(el, url);
         }
@@ -1498,6 +1507,11 @@ async function sendReaction(messageId, emoji) {
 
     const targetBody = msg.messageBody || '';
 
+    // Optimistic: show reaction badge immediately
+    if (!msg._reactions) msg._reactions = [];
+    msg._reactions.push({ emoji, isMine: true });
+    renderMessages();
+
     try {
         await api('/api/messages/react', {
             method: 'POST',
@@ -1508,10 +1522,15 @@ async function sendReaction(messageId, emoji) {
                 targetBody,
             }
         });
-        // Reload to show the reaction as a badge on the target message
         reloadCurrentConversation(2000);
     } catch (e) {
         console.error('Failed to send reaction:', e);
+        // Remove optimistic reaction on failure
+        if (msg._reactions) {
+            const idx = msg._reactions.findIndex(r => r.emoji === emoji && r.isMine);
+            if (idx >= 0) msg._reactions.splice(idx, 1);
+            renderMessages();
+        }
     }
 }
 

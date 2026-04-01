@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -109,6 +110,15 @@ func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 
 // handleProxyMedia proxies a media download from Garmin to the browser.
 // This avoids CORS issues with Garmin's S3 signed URLs.
+// In-memory media cache to avoid repeated Garmin S3 downloads.
+// Keyed by mediaId. Entries are small (AVIF images ~50-200KB).
+var mediaCache sync.Map // map[string]mediaCacheEntry
+
+type mediaCacheEntry struct {
+	data      []byte
+	mediaType gm.MediaType
+}
+
 func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 
@@ -133,6 +143,14 @@ func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mediaType := gm.MediaType(r.URL.Query().Get("mediaType"))
+	cacheKey := mediaID.String()
+
+	// Check server-side cache first (avoids repeated Garmin S3 downloads)
+	if cached, ok := mediaCache.Load(cacheKey); ok {
+		entry := cached.(mediaCacheEntry)
+		serveMedia(w, entry.data, entry.mediaType)
+		return
+	}
 
 	data, err := session.Account.API.DownloadMedia(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
 	if err != nil {
@@ -140,6 +158,13 @@ func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cache for subsequent requests
+	mediaCache.Store(cacheKey, mediaCacheEntry{data: data, mediaType: mediaType})
+
+	serveMedia(w, data, mediaType)
+}
+
+func serveMedia(w http.ResponseWriter, data []byte, mediaType gm.MediaType) {
 	switch mediaType {
 	case gm.MediaTypeImageAvif:
 		w.Header().Set("Content-Type", "image/avif")
@@ -149,7 +174,7 @@ func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Write(data)
 }
 
@@ -178,8 +203,8 @@ func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 		"-vf", "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:flags=lanczos",
 		"-frames:v", "1",
 		"-c:v", "libaom-av1",
-		"-crf", "30", "-b:v", "0",
-		"-cpu-used", "6",
+		"-crf", "32", "-b:v", "0",
+		"-cpu-used", "8",
 		"-pix_fmt", "yuv444p",
 		"-still-picture", "1",
 		"-y", tmpPath,
