@@ -523,7 +523,7 @@ async function startNewChat() {
 
 // ─── Media ───────────────────────────────────────────────────────────────────
 function getMediaProxyUrl(msg, convId) {
-    if (!msg.mediaId) return null;
+    if (!msg.mediaId || msg.mediaId === '00000000-0000-0000-0000-000000000000') return null;
     // uuid may be missing from conversation detail responses;
     // fall back to messageId (same strategy as reference implementation)
     const uuid = msg.uuid || msg.messageId;
@@ -815,12 +815,10 @@ function handleIncomingMessage(msg) {
 }
 
 function handleStatusUpdate(update) {
-    // Update message status in current view
     if (!update.messageId) return;
     const msgId = update.messageId.messageId;
     const msg = state.messages.find(m => m.messageId === msgId);
     if (msg && update.messageStatus) {
-        // Update the status array
         if (!msg.status) msg.status = [];
         const existing = msg.status.find(s => s.userId === (update.userId || ''));
         if (existing) {
@@ -828,7 +826,9 @@ function handleStatusUpdate(update) {
         } else {
             msg.status.push({ userId: update.userId || '', messageStatus: update.messageStatus });
         }
-        renderMessages();
+        // Don't do a full re-render for status updates — it destroys
+        // waveform players being initialized. Just update status icons.
+        // A full renderMessages() will pick it up on next navigation.
     }
 }
 
@@ -1091,9 +1091,13 @@ function getLocationHtml(msg) {
 const mediaUrlCache = {};
 // Cache of waveform amplitude data keyed by URL (avoids re-decoding audio)
 const waveformCache = {};
+// Track waveform players being initialized (prevents duplicate creation during rapid re-renders)
+const waveformInitPending = new Set();
 
 function getMediaHtml(msg, convId) {
-    if (!msg.mediaId) return '';
+    // Skip messages without media or with nil UUID mediaId
+    if (!msg.mediaId || msg.mediaId === '00000000-0000-0000-0000-000000000000') return '';
+    if (!msg.mediaType) return '';
     const msgId = msg.messageId;
 
     // Check if we already have the URL cached
@@ -1124,33 +1128,25 @@ function loadMediaForMessages() {
     if (!convId) return;
 
     for (const msg of state.messages) {
-        if (!msg.mediaId) continue;
+        if (!msg.mediaId || msg.mediaId === '00000000-0000-0000-0000-000000000000' || !msg.mediaType) continue;
 
-        if (mediaUrlCache[msg.messageId]) {
-            // Image already rendered inline by getMediaHtml(). Only waveform
-            // players need JS init after a re-render (they lose their state).
-            if (msg.mediaType === 'AudioOgg') {
-                const el = document.getElementById(`media-${msg.messageId}`);
-                if (el && !el.dataset.waveform) {
-                    el.dataset.waveform = 'true';
-                    createWaveformPlayer(el, mediaUrlCache[msg.messageId]);
-                }
-            }
-            continue;
-        }
-
-        // First time seeing this media — fetch URL and render
-        const url = getMediaProxyUrl(msg, convId);
+        const msgId = msg.messageId;
+        const url = mediaUrlCache[msgId] || getMediaProxyUrl(msg, convId);
         if (!url) continue;
-
-        mediaUrlCache[msg.messageId] = url;
-
-        const el = document.getElementById(`media-${msg.messageId}`);
-        if (!el) continue;
+        mediaUrlCache[msgId] = url;
 
         if (msg.mediaType === 'ImageAvif') {
+            // Images are rendered inline by getMediaHtml when cached - nothing to do
+            if (!document.getElementById(`media-${msgId}`)) continue;
+            const el = document.getElementById(`media-${msgId}`);
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
+            const el = document.getElementById(`media-${msgId}`);
+            if (!el) continue;
+            // Skip if already has a waveform or is being initialized
+            if (el.dataset.waveform || waveformInitPending.has(msgId)) continue;
+            waveformInitPending.add(msgId);
+            el.dataset.waveform = 'true';
             createWaveformPlayer(el, url);
         }
     }
