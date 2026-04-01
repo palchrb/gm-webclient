@@ -1091,8 +1091,6 @@ function getLocationHtml(msg) {
 const mediaUrlCache = {};
 // Cache of waveform amplitude data keyed by URL (avoids re-decoding audio)
 const waveformCache = {};
-// Track waveform players being initialized (prevents duplicate creation during rapid re-renders)
-const waveformInitPending = new Set();
 
 function getMediaHtml(msg, convId) {
     // Skip messages without media or with nil UUID mediaId
@@ -1131,22 +1129,20 @@ function loadMediaForMessages() {
         if (!msg.mediaId || msg.mediaId === '00000000-0000-0000-0000-000000000000' || !msg.mediaType) continue;
 
         const msgId = msg.messageId;
+        const el = document.getElementById(`media-${msgId}`);
+        if (!el) continue;
+
+        // Skip if already populated (has child content beyond placeholder text)
+        if (el.dataset.loaded) continue;
+
         const url = mediaUrlCache[msgId] || getMediaProxyUrl(msg, convId);
         if (!url) continue;
         mediaUrlCache[msgId] = url;
+        el.dataset.loaded = 'true';
 
         if (msg.mediaType === 'ImageAvif') {
-            // Images are rendered inline by getMediaHtml when cached - nothing to do
-            if (!document.getElementById(`media-${msgId}`)) continue;
-            const el = document.getElementById(`media-${msgId}`);
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
-            const el = document.getElementById(`media-${msgId}`);
-            if (!el) continue;
-            // Skip if already has a waveform or is being initialized
-            if (el.dataset.waveform || waveformInitPending.has(msgId)) continue;
-            waveformInitPending.add(msgId);
-            el.dataset.waveform = 'true';
             createWaveformPlayer(el, url);
         }
     }
