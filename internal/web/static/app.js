@@ -235,6 +235,8 @@ async function loadMembers(convId) {
 
 async function selectConversation(convId) {
     state.currentConversationId = convId;
+    delete unreadCounts[convId]; // Clear unread badge
+    renderConversations(); // Update badge display
 
     document.getElementById('no-conversation').classList.add('hidden');
     document.getElementById('conversation-view').classList.remove('hidden');
@@ -564,7 +566,8 @@ function stageMediaPreview(file) {
         previewImg.classList.remove('hidden');
         previewImg.onload = () => URL.revokeObjectURL(url);
     } else if (file.type.startsWith('audio/')) {
-        previewAudio.textContent = 'Audio: ' + file.name;
+        const audioUrl = URL.createObjectURL(file);
+        previewAudio.innerHTML = `<audio controls preload="metadata" style="max-width:200px;height:32px"><source src="${audioUrl}"></audio>`;
         previewAudio.classList.remove('hidden');
     }
 
@@ -688,7 +691,7 @@ async function startRecording() {
             clearInterval(recordingTimer);
             const blob = new Blob(audioChunks, { type: mimeType });
             const file = new File([blob], `voice.${fileExt}`, { type: mimeType });
-            sendMediaFile(file);
+            stageMediaPreview(file);
             updateRecordingUI(false);
         };
 
@@ -784,8 +787,16 @@ function connectSSE() {
     });
 }
 
+// Track unread messages per conversation
+const unreadCounts = {};
+
 function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
+
+    // Track unread for conversations we're not currently viewing
+    if (state.currentConversationId !== convId) {
+        unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
+    }
 
     // Update conversation list (move to top)
     const idx = state.conversations.findIndex(c => c.conversationId === convId);
@@ -845,6 +856,8 @@ function renderConversations() {
         const name = getConversationName(conv);
         const initial = name.charAt(0).toUpperCase();
         const time = formatTime(conv.updatedDate);
+        const unread = unreadCounts[conv.conversationId] || 0;
+        const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread}</span>` : '';
 
         return `
             <div class="conversation-item ${active}" onclick="selectConversation('${conv.conversationId}')">
@@ -852,7 +865,10 @@ function renderConversations() {
                 <div class="conversation-info">
                     <div class="conversation-name">${escapeHtml(name)}</div>
                 </div>
-                <div class="conversation-time">${time}</div>
+                <div class="conversation-meta">
+                    <div class="conversation-time">${time}</div>
+                    ${unreadBadge}
+                </div>
             </div>
         `;
     }).join('');
@@ -1105,7 +1121,9 @@ function getMediaHtml(msg, convId) {
             return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
         }
         if (msg.mediaType === 'AudioOgg') {
-            return `<div class="message-audio" id="media-${msgId}"></div>`;
+            // Render inline audio element immediately (like images).
+            // Waveform player will be layered on top by loadMediaForMessages.
+            return `<div class="message-audio" id="media-${msgId}"><audio controls preload="metadata" style="max-width:250px;height:36px"><source src="${escapeHtml(cachedUrl)}" type="audio/ogg"></audio></div>`;
         }
     }
 
@@ -1130,20 +1148,33 @@ function loadMediaForMessages() {
 
         const msgId = msg.messageId;
         const el = document.getElementById(`media-${msgId}`);
-        if (!el) continue;
+        if (!el) {
+            console.debug('loadMedia: no DOM element for', msgId, msg.mediaType);
+            continue;
+        }
 
-        // Skip if already populated (has child content beyond placeholder text)
         if (el.dataset.loaded) continue;
 
         const url = mediaUrlCache[msgId] || getMediaProxyUrl(msg, convId);
-        if (!url) continue;
+        if (!url) {
+            console.debug('loadMedia: no URL for', msgId);
+            continue;
+        }
         mediaUrlCache[msgId] = url;
         el.dataset.loaded = 'true';
 
         if (msg.mediaType === 'ImageAvif') {
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
-            createWaveformPlayer(el, url);
+            // Render basic audio element immediately (always works)
+            el.innerHTML = `<audio controls preload="metadata" style="max-width:250px;height:36px"><source src="${escapeHtml(url)}" type="audio/ogg"></audio>`;
+            // Then upgrade to waveform player async
+            try {
+                createWaveformPlayer(el, url);
+            } catch (e) {
+                console.error('Waveform creation failed, keeping basic audio player', e);
+            }
+        }
         }
     }
 }
