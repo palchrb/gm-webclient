@@ -90,11 +90,39 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		n := s.sessions.RestoreSessions(s.sessionStore, logger)
 		if n > 0 {
 			logger.Info("Restored encrypted sessions", "count", n)
+			// Wire push callbacks and load push subscriptions for restored accounts
+			s.wireRestoredAccounts()
 		}
 	}
 
 	s.registerRoutes()
 	return s
+}
+
+// wireRestoredAccounts sets up push callbacks and loads push subscriptions
+// for accounts restored from encrypted storage. This mirrors what
+// handleConfirmOTP does for fresh logins.
+func (s *Server) wireRestoredAccounts() {
+	s.sessions.mu.RLock()
+	defer s.sessions.mu.RUnlock()
+
+	for _, acct := range s.sessions.accounts {
+		phone := acct.Phone
+		// Load persisted push subscriptions
+		if s.pushStore != nil {
+			acct.pushMu.Lock()
+			if acct.PushSubscriptions == nil {
+				acct.PushSubscriptions = s.pushStore.Load(phone)
+			}
+			acct.pushMu.Unlock()
+		}
+		// Wire push callback (same as in handleConfirmOTP)
+		acctRef := acct
+		acct.SSE.OnNoSubscribers(func(event SSEEvent) {
+			s.sendWebPush(acctRef, event)
+		})
+		s.logger.Debug("Wired push callback for restored account", "phone", phone)
+	}
 }
 
 // PersistSessions saves current sessions to encrypted storage (if enabled).

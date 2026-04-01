@@ -241,7 +241,18 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 	tmpIn.Close()
 	defer os.Remove(tmpInPath)
 
-	var out, errBuf bytes.Buffer
+	// Output to temp file with explicit -f ogg. Using temp file instead of pipe
+	// ensures proper OGG page headers (granule positions, duration) which some
+	// players (Garmin iOS app) require for playback.
+	tmpOut, err := os.CreateTemp("", "garmin-audio-out-*.ogg")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp output: %w", err)
+	}
+	tmpOutPath := tmpOut.Name()
+	tmpOut.Close()
+	defer os.Remove(tmpOutPath)
+
+	var errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-i", tmpInPath,
@@ -250,14 +261,14 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-ac", "1",
 		"-c:a", "libopus",
 		"-b:a", "16k",
-		"-f", "ogg", "pipe:1",
+		"-f", "ogg",
+		"-y", tmpOutPath,
 	)
-	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("audio to OGG: %w\n%s", err, errBuf.String())
 	}
-	return out.Bytes(), nil
+	return os.ReadFile(tmpOutPath)
 }
 
 func isImageMIME(mime string) bool {
