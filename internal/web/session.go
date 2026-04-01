@@ -123,8 +123,13 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 // (e.g. after external device deletion via iOS app).
 func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
 	if acct, ok := sm.accounts[phone]; ok {
-		// Always update credentials from a new login — they are guaranteed fresh.
-		// The old credentials may have been invalidated externally.
+		// If auth is the same object (e.g. additional session for same account
+		// during restore), just reuse — no need to restart connections.
+		if acct.Auth == auth {
+			return acct
+		}
+
+		// Fresh OTP login — update credentials and restart connections.
 		sm.logger.Info("Updating account with fresh credentials from new login", "phone", phone,
 			"oldInstance", acct.Auth.InstanceID, "newInstance", auth.InstanceID)
 
