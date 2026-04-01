@@ -1092,16 +1092,18 @@ function getMediaHtml(msg, convId) {
     return '';
 }
 
+// Only processes messages that need async media loading or waveform init.
+// Cached images are already rendered inline by getMediaHtml() — skipped here.
 function loadMediaForMessages() {
     const convId = state.currentConversationId;
     if (!convId) return;
 
-    const container = document.getElementById('messages');
-
     for (const msg of state.messages) {
         if (!msg.mediaId) continue;
+
         if (mediaUrlCache[msg.messageId]) {
-            // Already cached — just need to init waveform players
+            // Image already rendered inline by getMediaHtml(). Only waveform
+            // players need JS init after a re-render (they lose their state).
             if (msg.mediaType === 'AudioOgg') {
                 const el = document.getElementById(`media-${msg.messageId}`);
                 if (el && !el.dataset.waveform) {
@@ -1112,6 +1114,7 @@ function loadMediaForMessages() {
             continue;
         }
 
+        // First time seeing this media — fetch URL and render
         const url = getMediaProxyUrl(msg, convId);
         if (!url) continue;
 
@@ -1120,11 +1123,8 @@ function loadMediaForMessages() {
         const el = document.getElementById(`media-${msg.messageId}`);
         if (!el) continue;
 
-        // Preserve scroll position when inserting media above viewport
-        const scrollBottom = container.scrollHeight - container.scrollTop;
-
         if (msg.mediaType === 'ImageAvif') {
-            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" loading="lazy" onload="stabilizeScroll()">`;
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
             createWaveformPlayer(el, url);
         }
