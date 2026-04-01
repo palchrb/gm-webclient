@@ -210,6 +210,11 @@ func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logg
 
 	if acct.FCM != nil {
 		acct.FCM.OnMessage(func(msg fcm.NewMessage) {
+			sm.logger.Info("FCM→SSE: publishing new message",
+				"phone", phone,
+				"messageId", msg.MessageID.String(),
+				"sseSubscribers", acct.SSE.SubscriberCount(),
+			)
 			acct.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
 		})
 		acct.FCM.OnConnected(func() {
@@ -508,7 +513,7 @@ func (sm *SessionManager) reaper() {
 			// If no SSE subscribers (all browser tabs closed), pause SignalR
 			// but keep FCM for Web Push
 			if acct.SSE.SubscriberCount() == 0 && acct.signalRStarted {
-				sm.logger.Debug("Pausing SignalR (no browser tabs, FCM stays for push)", "phone", phone)
+				sm.logger.Info("Pausing SignalR (no browser tabs, FCM stays for push)", "phone", phone, "sseSubscribers", 0)
 				acct.SignalR.Stop()
 				if acct.signalRCancel != nil {
 					acct.signalRCancel()

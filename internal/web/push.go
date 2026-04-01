@@ -100,18 +100,34 @@ func (s *PushSubscriptionStore) Save(phone string, subs map[string]*webpush.Subs
 
 // sendWebPush sends a push notification to all of a session's push subscribers.
 func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
+	srv.logger.Info("sendWebPush called",
+		"phone", acct.Phone,
+		"eventType", event.Type,
+		"dataType", fmt.Sprintf("%T", event.Data),
+	)
+
 	if event.Type != "message" {
+		srv.logger.Debug("sendWebPush: skipping non-message event", "type", event.Type)
 		return
 	}
 	if srv.vapidKeys == nil {
+		srv.logger.Warn("sendWebPush: VAPID keys not configured")
 		return
 	}
 
 	// Extract notification content from the message (skip own messages)
 	payload := buildPushPayload(event.Data, acct.Phone)
 	if payload == nil {
+		srv.logger.Info("sendWebPush: payload nil (own message or unknown type)",
+			"phone", acct.Phone,
+		)
 		return
 	}
+	srv.logger.Info("sendWebPush: sending notification",
+		"phone", acct.Phone,
+		"title", payload["title"],
+		"body", payload["body"],
+	)
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return
