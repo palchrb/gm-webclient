@@ -133,12 +133,21 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 		auth.InstanceID = entry.InstanceID
 		auth.ExpiresAt = entry.ExpiresAt
 
+		// Validate credentials: refresh if expired, then do a lightweight
+		// API call to verify the instance hasn't been deleted externally.
 		if auth.TokenExpired() {
 			if err := auth.RefreshHermesToken(context.Background()); err != nil {
 				sm.logger.Warn("Restored session expired, skipping",
 					"phone", entry.Phone, "error", err)
 				continue
 			}
+		}
+		// Quick validation — if this returns auth error, the instance was deleted
+		api := gm.NewHermesAPI(auth, gm.WithAPILogger(logger))
+		if _, err := api.GetConversations(context.Background(), gm.WithLimit(1)); err != nil {
+			sm.logger.Warn("Restored session credentials invalid (instance deleted?), skipping",
+				"phone", entry.Phone, "error", err)
+			continue
 		}
 
 		session, err := sm.CreateSession(entry.Phone, auth, logger)

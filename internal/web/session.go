@@ -118,9 +118,31 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 }
 
 // getOrCreateAccount returns the existing account for a phone, or creates one.
+// If an account already exists but new auth is provided (re-login), the account's
+// auth is updated with the fresh credentials.
 func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
 	if acct, ok := sm.accounts[phone]; ok {
-		sm.logger.Info("Reusing existing account", "phone", phone)
+		// Update auth with fresh credentials from new login
+		// (old tokens may have been invalidated by device deletion)
+		if auth.InstanceID != "" && auth.InstanceID != acct.Auth.InstanceID {
+			sm.logger.Info("Updating account with fresh credentials", "phone", phone)
+			// Stop old connections before swapping auth
+			acct.SignalR.Stop()
+			if acct.signalRCancel != nil {
+				acct.signalRCancel()
+			}
+			if acct.fcmCancel != nil {
+				acct.fcmCancel()
+			}
+			acct.mu.Lock()
+			acct.Auth = auth
+			acct.API = gm.NewHermesAPI(auth, gm.WithAPILogger(logger.With("component", "hermes", "phone", phone)))
+			acct.SignalR = gm.NewHermesSignalR(auth, gm.WithSignalRLogger(logger.With("component", "hermes", "phone", phone)))
+			acct.signalRStarted = false
+			acct.fcmStarted = false
+			acct.mu.Unlock()
+			sm.wireAccountEvents(acct, logger)
+		}
 		return acct
 	}
 
@@ -145,48 +167,52 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		SSE:     NewSSEBroker(),
 	}
 
-	// Wire SignalR → shared SSE broker
-	sr.OnMessage(func(msg gm.MessageModel) {
-		acct.SSE.Publish(SSEEvent{Type: "message", Data: msg})
-	})
-	sr.OnStatusUpdate(func(update gm.MessageStatusUpdate) {
-		acct.SSE.Publish(SSEEvent{Type: "status", Data: update})
-	})
-	sr.OnMuteUpdate(func(update gm.ConversationMuteStatusUpdate) {
-		acct.SSE.Publish(SSEEvent{Type: "mute", Data: update})
-	})
-	sr.OnBlockUpdate(func(update gm.UserBlockStatusUpdate) {
-		acct.SSE.Publish(SSEEvent{Type: "block", Data: update})
-	})
-	sr.OnNotification(func(notif gm.ServerNotification) {
-		acct.SSE.Publish(SSEEvent{Type: "notification", Data: notif})
-	})
-	sr.OnOpen(func() {
-		acct.SSE.Publish(SSEEvent{Type: "connected", Data: nil})
-	})
-	sr.OnClose(func() {
-		acct.SSE.Publish(SSEEvent{Type: "disconnected", Data: nil})
-	})
-
-	// Wire FCM → shared SSE broker
-	if fcmClient != nil {
-		fcmClient.OnMessage(func(msg fcm.NewMessage) {
-			acct.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
-		})
-		fcmClient.OnConnected(func() {
-			sm.logger.Debug("FCM connected", "phone", phone)
-		})
-		fcmClient.OnDisconnected(func() {
-			sm.logger.Debug("FCM disconnected", "phone", phone)
-		})
-		fcmClient.OnError(func(err error) {
-			sm.logger.Error("FCM error", "phone", phone, "error", err)
-		})
-	}
-
+	sm.wireAccountEvents(acct, logger)
 	sm.accounts[phone] = acct
 	sm.logger.Info("Account created", "phone", phone)
 	return acct
+}
+
+// wireAccountEvents sets up SignalR and FCM event callbacks on the account's SSE broker.
+func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logger) {
+	phone := acct.Phone
+
+	acct.SignalR.OnMessage(func(msg gm.MessageModel) {
+		acct.SSE.Publish(SSEEvent{Type: "message", Data: msg})
+	})
+	acct.SignalR.OnStatusUpdate(func(update gm.MessageStatusUpdate) {
+		acct.SSE.Publish(SSEEvent{Type: "status", Data: update})
+	})
+	acct.SignalR.OnMuteUpdate(func(update gm.ConversationMuteStatusUpdate) {
+		acct.SSE.Publish(SSEEvent{Type: "mute", Data: update})
+	})
+	acct.SignalR.OnBlockUpdate(func(update gm.UserBlockStatusUpdate) {
+		acct.SSE.Publish(SSEEvent{Type: "block", Data: update})
+	})
+	acct.SignalR.OnNotification(func(notif gm.ServerNotification) {
+		acct.SSE.Publish(SSEEvent{Type: "notification", Data: notif})
+	})
+	acct.SignalR.OnOpen(func() {
+		acct.SSE.Publish(SSEEvent{Type: "connected", Data: nil})
+	})
+	acct.SignalR.OnClose(func() {
+		acct.SSE.Publish(SSEEvent{Type: "disconnected", Data: nil})
+	})
+
+	if acct.FCM != nil {
+		acct.FCM.OnMessage(func(msg fcm.NewMessage) {
+			acct.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
+		})
+		acct.FCM.OnConnected(func() {
+			sm.logger.Debug("FCM connected", "phone", phone)
+		})
+		acct.FCM.OnDisconnected(func() {
+			sm.logger.Debug("FCM disconnected", "phone", phone)
+		})
+		acct.FCM.OnError(func(err error) {
+			sm.logger.Error("FCM error", "phone", phone, "error", err)
+		})
+	}
 }
 
 // CreateSession creates a new browser session, reusing or creating an account.
