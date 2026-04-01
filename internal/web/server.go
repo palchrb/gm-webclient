@@ -121,7 +121,10 @@ func (s *Server) wireRestoredAccounts() {
 		acct.SSE.OnNoSubscribers(func(event SSEEvent) {
 			s.sendWebPush(acctRef, event)
 		})
-		s.logger.Debug("Wired push callback for restored account", "phone", phone)
+		// Start FCM immediately so push works even before any browser connects.
+		// SignalR is NOT started here — it's only useful with active SSE tabs.
+		s.sessions.EnsureFCM(acct)
+		s.logger.Info("Wired push + started FCM for restored account", "phone", phone)
 	}
 }
 
