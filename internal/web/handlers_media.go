@@ -259,7 +259,9 @@ func mimeToFFmpegFormat(mime string) (string, error) {
 		return "ogg", nil
 	case "audio/mpeg", "audio/mp3":
 		return "mp3", nil
-	case "audio/mp4", "audio/m4a", "audio/aac":
+	case "audio/mp4", "audio/m4a":
+		return "mp4", nil
+	case "audio/aac":
 		return "aac", nil
 	case "audio/wav", "audio/wave":
 		return "wav", nil

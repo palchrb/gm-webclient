@@ -421,10 +421,12 @@ async function reloadCurrentConversation(delayMs) {
 
         const newMessages = [...serverMsgs, ...optimistic];
 
-        // Only re-render if the message list actually changed
-        const oldIds = state.messages.map(m => m.messageId).join(',');
-        const newIds = newMessages.map(m => m.messageId).join(',');
-        if (oldIds === newIds) return; // no change, skip re-render
+        // Only re-render if message list actually changed (new/removed messages
+        // or new media appeared on existing messages)
+        const msgKey = m => m.messageId + (m.mediaId || '') + (m._sendState || '');
+        const oldKey = state.messages.map(msgKey).join(',');
+        const newKey = newMessages.map(msgKey).join(',');
+        if (oldKey === newKey) return;
 
         state.messages = newMessages;
         cache.set('msgs_' + convId, serverMsgs);
@@ -648,10 +650,31 @@ async function startRecording() {
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Prefer webm/opus which ffmpeg can easily convert to OGG
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-            ? 'audio/webm;codecs=opus'
-            : 'audio/webm';
+        // Pick the best supported audio format for recording.
+        // Firefox/Chrome: audio/webm;codecs=opus (best)
+        // Safari: audio/mp4 or audio/aac (no webm support)
+        let mimeType = '';
+        let fileExt = '';
+        for (const [mime, ext] of [
+            ['audio/webm;codecs=opus', 'webm'],
+            ['audio/webm', 'webm'],
+            ['audio/mp4', 'mp4'],
+            ['audio/aac', 'aac'],
+            ['audio/ogg;codecs=opus', 'ogg'],
+        ]) {
+            if (MediaRecorder.isTypeSupported(mime)) {
+                mimeType = mime;
+                fileExt = ext;
+                break;
+            }
+        }
+        if (!mimeType) {
+            alert('Your browser does not support audio recording in any known format.');
+            stream.getTracks().forEach(t => t.stop());
+            return;
+        }
+        console.log('Recording with MIME type:', mimeType);
+
         mediaRecorder = new MediaRecorder(stream, { mimeType });
         audioChunks = [];
 
@@ -663,7 +686,7 @@ async function startRecording() {
             stream.getTracks().forEach(t => t.stop());
             clearInterval(recordingTimer);
             const blob = new Blob(audioChunks, { type: mimeType });
-            const file = new File([blob], 'voice.webm', { type: mimeType });
+            const file = new File([blob], `voice.${fileExt}`, { type: mimeType });
             sendMediaFile(file);
             updateRecordingUI(false);
         };
