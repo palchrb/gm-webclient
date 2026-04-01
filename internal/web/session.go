@@ -118,31 +118,35 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 }
 
 // getOrCreateAccount returns the existing account for a phone, or creates one.
-// If an account already exists but new auth is provided (re-login), the account's
-// auth is updated with the fresh credentials.
+// A fresh OTP login ALWAYS replaces the existing account's credentials and
+// restarts connections. This ensures we never get stuck on stale tokens
+// (e.g. after external device deletion via iOS app).
 func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
 	if acct, ok := sm.accounts[phone]; ok {
-		// Update auth with fresh credentials from new login
-		// (old tokens may have been invalidated by device deletion)
-		if auth.InstanceID != "" && auth.InstanceID != acct.Auth.InstanceID {
-			sm.logger.Info("Updating account with fresh credentials", "phone", phone)
-			// Stop old connections before swapping auth
-			acct.SignalR.Stop()
-			if acct.signalRCancel != nil {
-				acct.signalRCancel()
-			}
-			if acct.fcmCancel != nil {
-				acct.fcmCancel()
-			}
-			acct.mu.Lock()
-			acct.Auth = auth
-			acct.API = gm.NewHermesAPI(auth, gm.WithAPILogger(logger.With("component", "hermes", "phone", phone)))
-			acct.SignalR = gm.NewHermesSignalR(auth, gm.WithSignalRLogger(logger.With("component", "hermes", "phone", phone)))
-			acct.signalRStarted = false
-			acct.fcmStarted = false
-			acct.mu.Unlock()
-			sm.wireAccountEvents(acct, logger)
+		// Always update credentials from a new login — they are guaranteed fresh.
+		// The old credentials may have been invalidated externally.
+		sm.logger.Info("Updating account with fresh credentials from new login", "phone", phone,
+			"oldInstance", acct.Auth.InstanceID, "newInstance", auth.InstanceID)
+
+		// Stop old connections before swapping
+		acct.SignalR.Stop()
+		if acct.signalRCancel != nil {
+			acct.signalRCancel()
 		}
+		if acct.fcmCancel != nil {
+			acct.fcmCancel()
+		}
+
+		hermesLogger := logger.With("component", "hermes", "phone", phone)
+		acct.mu.Lock()
+		acct.Auth = auth
+		acct.API = gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
+		acct.SignalR = gm.NewHermesSignalR(auth, gm.WithSignalRLogger(hermesLogger))
+		acct.signalRStarted = false
+		acct.fcmStarted = false
+		acct.mu.Unlock()
+
+		sm.wireAccountEvents(acct, logger)
 		return acct
 	}
 
