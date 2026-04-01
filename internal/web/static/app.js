@@ -861,7 +861,7 @@ function renderMessages() {
     }
 
     // First pass: collect reactions and map them to target messages.
-    // Garmin matches reactions by quoted body text to the most recent message.
+    // Match by body text, preferring the message closest in time to the reaction.
     const reactions = {}; // messageId -> [{emoji, from}]
     const reactionMsgIds = new Set();
 
@@ -870,15 +870,25 @@ function renderMessages() {
         const r = extractReaction(msg);
         if (!r) continue;
         reactionMsgIds.add(msg.messageId);
-        // Find target: most recent message whose body matches r.targetText
+
+        // Find target: message whose body matches, closest in time to the reaction
+        const reactionTime = new Date(msg.sentAt || msg.receivedAt || 0).getTime();
         let target = null;
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-            const candidate = state.messages[i];
+        let bestTimeDiff = Infinity;
+
+        for (const candidate of state.messages) {
             if (candidate.messageId === msg.messageId) continue;
+            if (isReactionMessage(candidate)) continue;
             const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-            if (candidateBody === r.targetText) {
+            if (candidateBody !== r.targetText) continue;
+
+            const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
+            // Prefer messages BEFORE the reaction (reaction should be after its target)
+            // but also consider messages slightly after (in case of clock skew)
+            const diff = Math.abs(reactionTime - candidateTime);
+            if (diff < bestTimeDiff) {
+                bestTimeDiff = diff;
                 target = candidate;
-                break;
             }
         }
         if (target) {
