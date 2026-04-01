@@ -946,11 +946,10 @@ function renderMessages() {
         const errorHtml = msg._errorMsg
             ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
 
-        // Render reaction badges
-        const msgReactions = reactions[msg.messageId] || [];
+        // Render reaction badges (merge parsed reactions + optimistic ones)
+        const msgReactions = [...(reactions[msg.messageId] || []), ...(msg._reactions || [])];
         let reactionsHtml = '';
         if (msgReactions.length > 0) {
-            // Group by emoji and count
             const counts = {};
             for (const r of msgReactions) {
                 counts[r.emoji] = (counts[r.emoji] || 0) + 1;
@@ -1508,6 +1507,11 @@ async function sendReaction(messageId, emoji) {
 
     const targetBody = msg.messageBody || '';
 
+    // Optimistic: show reaction badge immediately
+    if (!msg._reactions) msg._reactions = [];
+    msg._reactions.push({ emoji, isMine: true });
+    renderMessages();
+
     try {
         await api('/api/messages/react', {
             method: 'POST',
@@ -1518,10 +1522,15 @@ async function sendReaction(messageId, emoji) {
                 targetBody,
             }
         });
-        // Reload to show the reaction as a badge on the target message
         reloadCurrentConversation(2000);
     } catch (e) {
         console.error('Failed to send reaction:', e);
+        // Remove optimistic reaction on failure
+        if (msg._reactions) {
+            const idx = msg._reactions.findIndex(r => r.emoji === emoji && r.isMine);
+            if (idx >= 0) msg._reactions.splice(idx, 1);
+            renderMessages();
+        }
     }
 }
 
