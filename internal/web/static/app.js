@@ -1580,13 +1580,26 @@ async function requestNotificationPermission() {
         alert('This browser does not support notifications.');
         return;
     }
-    const result = await Notification.requestPermission();
-    if (result === 'granted') {
-        await setupPushNotifications();
-        alert('Notifications enabled!');
-    } else if (result === 'denied') {
-        alert('Notifications blocked. Please allow them in your browser settings and try again.');
+
+    const current = Notification.permission;
+    if (current === 'denied') {
+        alert('Notifications are blocked. Please allow them in your browser settings (look for the lock icon in the address bar) and try again.');
+        return;
     }
+
+    if (current === 'default') {
+        // Browser will show the permission prompt
+        const result = await Notification.requestPermission();
+        if (result === 'denied') {
+            alert('Notifications were denied. You can change this in browser settings.');
+            return;
+        }
+        if (result !== 'granted') return;
+    }
+
+    // Permission granted (either just now or previously) — (re-)register push
+    await setupPushNotifications();
+    alert('Push notifications ' + (current === 'default' ? 'enabled' : 're-registered') + '!');
 }
 
 async function setupPushNotifications() {
