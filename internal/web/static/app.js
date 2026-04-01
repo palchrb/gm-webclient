@@ -1088,6 +1088,8 @@ function getLocationHtml(msg) {
 
 // Cache of media proxy URLs keyed by messageId (survives re-renders)
 const mediaUrlCache = {};
+// Cache of waveform amplitude data keyed by URL (avoids re-decoding audio)
+const waveformCache = {};
 
 function getMediaHtml(msg, convId) {
     if (!msg.mediaId) return '';
@@ -1186,44 +1188,58 @@ function createWaveformPlayer(container, audioUrl) {
         bars.push(bar);
     }
 
-    // Generate real waveform immediately from audio data
-    (async function() {
-        try {
-            const resp = await fetch(audioUrl);
-            const arrayBuf = await resp.arrayBuffer();
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const decoded = await audioCtx.decodeAudioData(arrayBuf);
-            const channelData = decoded.getChannelData(0);
-            audioCtx.close();
-
-            // Use RMS (root mean square) per bar for more accurate waveform
-            const samplesPerBar = Math.floor(channelData.length / barCount);
-            const amplitudes = [];
-            let maxAmp = 0;
-            for (let i = 0; i < barCount; i++) {
-                let sumSq = 0;
-                const start = i * samplesPerBar;
-                for (let j = start; j < start + samplesPerBar && j < channelData.length; j++) {
-                    sumSq += channelData[j] * channelData[j];
-                }
-                const rms = Math.sqrt(sumSq / samplesPerBar);
-                amplitudes.push(rms);
-                if (rms > maxAmp) maxAmp = rms;
-            }
-            for (let i = 0; i < barCount; i++) {
-                const normalized = maxAmp > 0 ? amplitudes[i] / maxAmp : 0;
-                bars[i].style.height = Math.max(8, normalized * 100) + '%';
-            }
-
-            // Set duration from decoded audio
-            const dur = decoded.duration;
-            const mins = Math.floor(dur / 60);
-            const secs = Math.floor(dur % 60);
-            timeDisplay.textContent = mins + ':' + secs.toString().padStart(2, '0');
-        } catch (e) {
-            // Keep placeholder bars on error
+    // Apply waveform data (from cache or by decoding audio)
+    function applyWaveform(heights, durationSecs) {
+        for (let i = 0; i < barCount && i < heights.length; i++) {
+            bars[i].style.height = heights[i] + '%';
         }
-    })();
+        if (durationSecs) {
+            const mins = Math.floor(durationSecs / 60);
+            const secs = Math.floor(durationSecs % 60);
+            timeDisplay.textContent = mins + ':' + secs.toString().padStart(2, '0');
+        }
+    }
+
+    if (waveformCache[audioUrl]) {
+        // Use cached waveform data (no network/decode needed)
+        const c = waveformCache[audioUrl];
+        applyWaveform(c.heights, c.duration);
+    } else {
+        // Decode audio to generate waveform
+        (async function() {
+            try {
+                const resp = await fetch(audioUrl);
+                const arrayBuf = await resp.arrayBuffer();
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const decoded = await audioCtx.decodeAudioData(arrayBuf);
+                const channelData = decoded.getChannelData(0);
+                audioCtx.close();
+
+                const samplesPerBar = Math.floor(channelData.length / barCount);
+                const heights = [];
+                let maxAmp = 0;
+                const amps = [];
+                for (let i = 0; i < barCount; i++) {
+                    let sumSq = 0;
+                    const start = i * samplesPerBar;
+                    for (let j = start; j < start + samplesPerBar && j < channelData.length; j++) {
+                        sumSq += channelData[j] * channelData[j];
+                    }
+                    const rms = Math.sqrt(sumSq / samplesPerBar);
+                    amps.push(rms);
+                    if (rms > maxAmp) maxAmp = rms;
+                }
+                for (let i = 0; i < barCount; i++) {
+                    heights.push(Math.max(8, (maxAmp > 0 ? amps[i] / maxAmp : 0) * 100));
+                }
+
+                waveformCache[audioUrl] = { heights, duration: decoded.duration };
+                applyWaveform(heights, decoded.duration);
+            } catch (e) {
+                // Keep placeholder bars on error
+            }
+        })();
+    }
 
     playBtn.onclick = () => {
         if (isPlaying) {
@@ -1276,9 +1292,9 @@ function createWaveformPlayer(container, audioUrl) {
     };
 
     function updateProgress(progress) {
-        const activeCount = Math.floor(progress * barCount);
+        const activeCount = Math.round(progress * barCount);
         for (let i = 0; i < barCount; i++) {
-            bars[i].classList.toggle('active', i < activeCount);
+            bars[i].classList.toggle('active', i <= activeCount);
         }
     }
 
@@ -1558,6 +1574,20 @@ async function sendReaction(messageId, emoji) {
 }
 
 // ─── Push Notifications ──────────────────────────────────────────────────────
+async function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+        alert('This browser does not support notifications.');
+        return;
+    }
+    const result = await Notification.requestPermission();
+    if (result === 'granted') {
+        await setupPushNotifications();
+        alert('Notifications enabled!');
+    } else if (result === 'denied') {
+        alert('Notifications blocked. Please allow them in your browser settings and try again.');
+    }
+}
+
 async function setupPushNotifications() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
         console.log('Push notifications not supported in this browser');

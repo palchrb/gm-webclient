@@ -143,6 +143,18 @@ body {
     font-size: 13px;
 }
 
+.header-btn {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.header-btn:hover { background: var(--bg-hover); color: var(--text); }
+
 .logout-btn {
     padding: 6px 12px;
     border: 1px solid var(--border);
@@ -754,17 +766,21 @@ body {
 
 /* ─── Media ─── */
 .message-image-container {
-    min-height: 100px;
-    max-width: min(300px, 100%);
+    max-width: 100%;
 }
 
 .message-image {
-    max-width: min(300px, 100%);
+    max-width: 100%;
     max-height: 300px;
     border-radius: 8px;
     margin-top: 4px;
     cursor: pointer;
     display: block;
+}
+
+/* Shrink-wrap bubble around images (don't stretch to max-width) */
+.message .message-bubble:has(.message-image) {
+    width: fit-content;
 }
 
 /* ─── Image Lightbox ─── */
