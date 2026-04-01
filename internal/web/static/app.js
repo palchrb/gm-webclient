@@ -1148,18 +1148,11 @@ function loadMediaForMessages() {
 
         const msgId = msg.messageId;
         const el = document.getElementById(`media-${msgId}`);
-        if (!el) {
-            console.debug('loadMedia: no DOM element for', msgId, msg.mediaType);
-            continue;
-        }
-
+        if (!el) continue;
         if (el.dataset.loaded) continue;
 
         const url = mediaUrlCache[msgId] || getMediaProxyUrl(msg, convId);
-        if (!url) {
-            console.debug('loadMedia: no URL for', msgId);
-            continue;
-        }
+        if (!url) continue;
         mediaUrlCache[msgId] = url;
         el.dataset.loaded = 'true';
 
@@ -1174,7 +1167,6 @@ function loadMediaForMessages() {
             } catch (e) {
                 console.error('Waveform creation failed, keeping basic audio player', e);
             }
-        }
         }
     }
 }
