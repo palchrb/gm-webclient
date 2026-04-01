@@ -229,7 +229,9 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
 	}
 
-	// Write input to temp file so ffmpeg can auto-detect the format
+	// Write input to temp file so ffmpeg can auto-detect the input format.
+	// Output uses pipe with explicit -f ogg, matching the reference
+	// implementation (matrix-garmin-messenger) exactly.
 	tmpIn, err := os.CreateTemp("", "garmin-audio-in-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp input: %w", err)
@@ -239,6 +241,7 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 	tmpIn.Close()
 	defer os.Remove(tmpInPath)
 
+	var out, errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error",
 		"-i", tmpInPath,
@@ -249,7 +252,6 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 		"-b:a", "16k",
 		"-f", "ogg", "pipe:1",
 	)
-	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
