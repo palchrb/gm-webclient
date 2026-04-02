@@ -1,5 +1,6 @@
-# Garmin Messenger Web Client
+# Community Garmin Messenger Web Client
 
+Not affiliated with Garmin in any way. 
 A lightweight web client for Garmin Messenger / InReach devices. Chat with your Garmin contacts from any browser.
 
 <img width="1022" height="776" alt="image" src="https://github.com/user-attachments/assets/8b5947a3-17c2-48d8-9933-e81cfc011f4f" />
