@@ -619,7 +619,7 @@ function getRecipientPhones(convId) {
 function addOptimisticMessage(convId, messageId, body, sendState) {
     if (state.currentConversationId !== convId) return;
     if (state.messages.find(m => m.messageId === messageId)) return;
-    state.messages.push({
+    const msg = {
         messageId: messageId,
         conversationId: convId,
         from: state.userId,
@@ -627,9 +627,18 @@ function addOptimisticMessage(convId, messageId, body, sendState) {
         sentAt: new Date().toISOString(),
         status: [],
         _sendState: sendState || 'sent',
-    });
-    renderMessages();
-    scrollToBottom(true); // force: user just sent
+    };
+    state.messages.push(msg);
+    // Append to DOM without full re-render to preserve scroll position
+    const container = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message-group sent';
+    div.innerHTML = `<div class="message sent" data-msgid="${messageId}">
+        <div class="message-text">${escapeHtml(body)}</div>
+        <div class="message-meta"><span class="message-time">${formatTime(msg.sentAt)}</span> <span class="message-status">&#8987;</span></div>
+    </div>`;
+    container.appendChild(div);
+    scrollToBottom(true);
 }
 
 // Replace a temporary optimistic message with the real server ID.
@@ -1707,11 +1716,14 @@ function escapeHtml(str) {
 // This prevents jumping around when reading history.
 function scrollToBottom(force) {
     const container = document.getElementById('messages');
+    // Double rAF ensures layout is complete before scrolling (important on mobile)
     requestAnimationFrame(() => {
-        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-        if (force || nearBottom) {
-            container.scrollTo({ top: container.scrollHeight, behavior: 'instant' });
-        }
+        requestAnimationFrame(() => {
+            const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+            if (force || nearBottom) {
+                container.scrollTop = container.scrollHeight;
+            }
+        });
     });
 }
 
