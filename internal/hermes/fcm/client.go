@@ -367,17 +367,26 @@ func (c *Client) handleMCSMessage(persistentID string, payload []byte, appData [
 
 	switch e := fcmEvent.(type) {
 	case NewMessage:
+		c.logger.Info("FCM new message received",
+			"messageId", e.MessageID.String(),
+			"conversationId", e.ConversationID.String(),
+			"hasCallback", c.onMessage != nil,
+		)
 		if c.onMessage != nil {
 			c.onMessage(e)
 		}
 	case NonconversationalMessage:
+		c.logger.Debug("FCM non-conversational message received")
 		if c.onNonconversationalMessage != nil {
 			c.onNonconversationalMessage(e)
 		}
 	case DeviceAccountUpdate:
+		c.logger.Debug("FCM device account update received")
 		if c.onDeviceAccountUpdate != nil {
 			c.onDeviceAccountUpdate(e)
 		}
+	default:
+		c.logger.Debug("FCM unknown event type", "type", fmt.Sprintf("%T", fcmEvent))
 	}
 
 	c.addPersistentID(persistentID)
