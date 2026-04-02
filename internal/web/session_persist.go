@@ -118,61 +118,83 @@ func (ss *SessionStore) Delete() {
 }
 
 // RestoreSessions recreates sessions from encrypted storage.
-// With hard pruning, only one session per phone is kept (the first valid one).
+// Multiple sessions for the same phone share one account.
 func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logger) int {
 	entries := store.Load()
 	if len(entries) == 0 {
 		return 0
 	}
 
-	// Only restore one session per phone (the first valid one)
-	restoredPhones := map[string]bool{}
+	// Track which phones have been validated (avoid re-validating)
+	validatedPhones := map[string]bool{} // phone → validated ok
 	restored := 0
 
 	for _, entry := range entries {
-		// Skip already-restored phones (hard prune)
-		if restoredPhones[entry.Phone] {
-			sm.logger.Info("Skipping duplicate session for phone (hard prune)", "phone", entry.Phone)
+		// Skip phones that already failed validation
+		if validated, exists := validatedPhones[entry.Phone]; exists && !validated {
 			continue
 		}
 
-		auth := gm.NewHermesAuth(gm.WithLogger(logger))
-		auth.AccessToken = entry.AccessToken
-		auth.RefreshToken = entry.RefreshToken
-		auth.InstanceID = entry.InstanceID
-		auth.ExpiresAt = entry.ExpiresAt
+		// First session for this phone — validate credentials
+		if _, exists := validatedPhones[entry.Phone]; !exists {
+			auth := gm.NewHermesAuth(gm.WithLogger(logger))
+			auth.AccessToken = entry.AccessToken
+			auth.RefreshToken = entry.RefreshToken
+			auth.InstanceID = entry.InstanceID
+			auth.ExpiresAt = entry.ExpiresAt
 
-		if auth.TokenExpired() {
-			if err := auth.RefreshHermesToken(context.Background()); err != nil {
-				sm.logger.Warn("Restored session expired, skipping",
+			if auth.TokenExpired() {
+				if err := auth.RefreshHermesToken(context.Background()); err != nil {
+					sm.logger.Warn("Restored session expired, skipping phone",
+						"phone", entry.Phone, "error", err)
+					validatedPhones[entry.Phone] = false
+					continue
+				}
+			}
+
+			api := gm.NewHermesAPI(auth, gm.WithAPILogger(logger))
+			if _, err := api.GetConversations(context.Background(), gm.WithLimit(1)); err != nil {
+				sm.logger.Warn("Restored session credentials invalid, skipping phone",
 					"phone", entry.Phone, "error", err)
+				validatedPhones[entry.Phone] = false
 				continue
 			}
-		}
 
-		api := gm.NewHermesAPI(auth, gm.WithAPILogger(logger))
-		if _, err := api.GetConversations(context.Background(), gm.WithLimit(1)); err != nil {
-			sm.logger.Warn("Restored session credentials invalid, skipping",
-				"phone", entry.Phone, "error", err)
+			session, err := sm.CreateSession(entry.Phone, auth, logger)
+			if err != nil {
+				sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
+				validatedPhones[entry.Phone] = false
+				continue
+			}
+
+			// Replace auto-generated ID with persisted one
+			sm.mu.Lock()
+			delete(sm.sessions, session.ID)
+			session.ID = entry.SessionID
+			sm.sessions[entry.SessionID] = session
+			sm.mu.Unlock()
+
+			validatedPhones[entry.Phone] = true
+			restored++
+			sm.logger.Info("Restored session (new account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
 			continue
 		}
 
-		session, err := sm.CreateSession(entry.Phone, auth, logger)
+		// Additional session for an already-validated phone — reuse account
+		session, err := sm.CreateSession(entry.Phone,
+			sm.accounts[entry.Phone].Auth, logger)
 		if err != nil {
-			sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
 			continue
 		}
 
-		// Replace auto-generated session ID with the persisted one
 		sm.mu.Lock()
 		delete(sm.sessions, session.ID)
 		session.ID = entry.SessionID
 		sm.sessions[entry.SessionID] = session
 		sm.mu.Unlock()
 
-		restoredPhones[entry.Phone] = true
 		restored++
-		sm.logger.Info("Restored session", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
+		sm.logger.Info("Restored session (existing account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
 	}
 
 	return restored

@@ -193,6 +193,10 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	// - WebAuthn available and no passkey yet: need setup
 	// - ForceOTP (lost passkey): clear old passkeys, need setup
 	needPasskeySetup := false
+	if s.webAuthn == nil || s.passkeyStore == nil {
+		s.logger.Debug("Passkey setup skipped (ORIGIN not configured)", "phone", req.Phone,
+			"webAuthn", s.webAuthn != nil, "passkeyStore", s.passkeyStore != nil)
+	}
 	if s.webAuthn != nil && s.passkeyStore != nil {
 		passkeyVerified := s.sessions.PopPasskeyVerified(req.Phone)
 		if pending.IsReauth || passkeyVerified {
