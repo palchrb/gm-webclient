@@ -576,7 +576,6 @@ async function sendMessage() {
 
     const convId = state.currentConversationId;
     input.value = '';
-    input.focus();
 
     // Show message immediately BEFORE the API call
     const tempId = 'sending-' + Date.now();
@@ -1711,7 +1710,7 @@ function scrollToBottom(force) {
     requestAnimationFrame(() => {
         const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
         if (force || nearBottom) {
-            container.scrollTop = container.scrollHeight;
+            container.scrollTo({ top: container.scrollHeight, behavior: 'instant' });
         }
     });
 }
