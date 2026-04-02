@@ -5,26 +5,31 @@ import (
 	"net/http"
 
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type requestOTPRequest struct {
 	Phone      string `json:"phone"`
 	DeviceName string `json:"deviceName"`
+	ForceOTP   bool   `json:"forceOTP"` // skip passkey check (lost passkey flow)
 }
 
 type requestOTPResponse struct {
 	Phone             string  `json:"phone"`
 	ValidUntil        *string `json:"validUntil,omitempty"`
 	AttemptsRemaining *int    `json:"attemptsRemaining,omitempty"`
-	NeedPIN           bool    `json:"needPin,omitempty"`
 	NeedPasskey       bool    `json:"needPasskey,omitempty"`
 }
 
 type confirmOTPRequest struct {
 	Phone string `json:"phone"`
 	Code  string `json:"code"`
-	PIN   string `json:"pin"`
+}
+
+type confirmOTPResponse struct {
+	LoggedIn         bool    `json:"loggedIn"`
+	Phone            *string `json:"phone,omitempty"`
+	UserID           *string `json:"userId,omitempty"`
+	NeedPasskeySetup bool    `json:"needPasskeySetup,omitempty"` // must register passkey before using app
 }
 
 type authStatusResponse struct {
@@ -52,38 +57,20 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If account already exists, offer passkey or PIN login instead of OTP.
-	if acct := s.sessions.GetAccount(req.Phone); acct != nil {
-		acct.credMu.RLock()
-		hasPasskey := len(acct.WebAuthnCreds) > 0
-		acct.credMu.RUnlock()
-
-		if hasPasskey && s.webAuthn != nil {
-			s.logger.Info("Account active with passkey, requesting passkey login", "phone", req.Phone)
-			writeJSON(w, http.StatusOK, requestOTPResponse{
-				Phone:       req.Phone,
-				NeedPasskey: true,
-			})
-			return
-		}
-		if len(acct.PINHash) > 0 {
-			s.logger.Info("Account active with PIN, requesting PIN login", "phone", req.Phone)
-			writeJSON(w, http.StatusOK, requestOTPResponse{
-				Phone:   req.Phone,
-				NeedPIN: true,
-			})
-			return
-		}
+	// If passkey exists and not forcing OTP, redirect to passkey login
+	if !req.ForceOTP && s.webAuthn != nil && s.passkeyStore != nil && s.passkeyStore.HasCredentials(req.Phone) {
+		s.logger.Info("Passkey exists, requesting passkey login", "phone", req.Phone)
+		writeJSON(w, http.StatusOK, requestOTPResponse{
+			Phone:       req.Phone,
+			NeedPasskey: true,
+		})
+		return
 	}
-
-	// No account, or account without passkey/PIN — proceed with normal OTP.
 
 	if req.DeviceName == "" {
 		req.DeviceName = "Garmin Messenger"
 	}
 
-	// Auth tokens are kept in server memory only — not persisted to disk.
-	// A Docker restart requires re-login, but no user data is stored on the server.
 	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
 
 	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, req.DeviceName)
@@ -97,8 +84,50 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store pending OTP for confirmation
-	s.sessions.StorePendingOTP(req.Phone, otpReq, auth)
+	s.sessions.StorePendingOTP(req.Phone, otpReq, auth, false)
+
+	writeJSON(w, http.StatusOK, requestOTPResponse{
+		Phone:             req.Phone,
+		ValidUntil:        otpReq.ValidUntil,
+		AttemptsRemaining: otpReq.AttemptsRemaining,
+	})
+}
+
+// handleRequestReauthOTP sends an OTP specifically for reconnecting Garmin
+// after passkey login when tokens are expired. Uses the existing device name.
+func (s *Server) handleRequestReauthOTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Phone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+		return
+	}
+
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+
+	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
+
+	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, "Garmin Messenger")
+	if err != nil {
+		s.logger.Error("Reauth OTP request failed", "phone", req.Phone, "error", err)
+		if apiErr, ok := err.(*gm.APIError); ok {
+			writeJSON(w, apiErr.StatusCode, map[string]string{"error": "OTP request failed: " + apiErr.Body})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "OTP request failed"})
+		return
+	}
+
+	s.sessions.StorePendingOTP(req.Phone, otpReq, auth, true)
 
 	writeJSON(w, http.StatusOK, requestOTPResponse{
 		Phone:             req.Phone,
@@ -127,8 +156,7 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 
 	if err := pending.Auth.ConfirmOTP(r.Context(), pending.OtpReq, req.Code); err != nil {
 		s.logger.Error("OTP confirmation failed", "phone", req.Phone, "error", err)
-		// Put it back so user can retry
-		s.sessions.StorePendingOTP(req.Phone, pending.OtpReq, pending.Auth)
+		s.sessions.StorePendingOTP(req.Phone, pending.OtpReq, pending.Auth, pending.IsReauth)
 		if apiErr, ok := err.(*gm.APIError); ok {
 			writeJSON(w, apiErr.StatusCode, map[string]string{"error": "OTP confirmation failed: " + apiErr.Body})
 			return
@@ -137,18 +165,11 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create session
+	// Create session (hard prunes any existing session for this phone)
 	session, err := s.sessions.CreateSession(req.Phone, pending.Auth, s.logger)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session"})
 		return
-	}
-
-	// If a PIN was provided with the OTP confirmation, set it on the account
-	if req.PIN != "" {
-		if hash, err := bcrypt.GenerateFromPassword([]byte(req.PIN), bcrypt.DefaultCost); err == nil {
-			session.Account.PINHash = hash
-		}
 	}
 
 	// Load persisted push subscriptions and wire push callback
@@ -165,103 +186,32 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	s.PersistSessions()
 
 	userID := gm.PhoneToHermesUserID(req.Phone)
-	writeJSON(w, http.StatusOK, authStatusResponse{
-		LoggedIn: true,
-		Phone:    &req.Phone,
-		UserID:   &userID,
+
+	// Determine if passkey setup is needed:
+	// - Reauth (passkey already verified, tokens refreshed): no setup needed
+	// - Passkey already verified via PopPasskeyVerified: no setup needed (lost passkey OTP, will re-register)
+	// - WebAuthn available and no passkey yet: need setup
+	// - ForceOTP (lost passkey): clear old passkeys, need setup
+	needPasskeySetup := false
+	if s.webAuthn != nil && s.passkeyStore != nil {
+		passkeyVerified := s.sessions.PopPasskeyVerified(req.Phone)
+		if pending.IsReauth || passkeyVerified {
+			// Reauth or lost-passkey OTP — passkey will be re-registered by frontend
+			needPasskeySetup = !s.passkeyStore.HasCredentials(req.Phone) || passkeyVerified
+		} else {
+			// Fresh first login — always need passkey
+			needPasskeySetup = true
+			// Clear any old passkeys (fresh OTP = fresh start)
+			s.passkeyStore.Save(req.Phone, nil)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, confirmOTPResponse{
+		LoggedIn:         true,
+		Phone:            &req.Phone,
+		UserID:           &userID,
+		NeedPasskeySetup: needPasskeySetup,
 	})
-}
-
-// handlePINLogin creates a new browser session using a PIN for an already-active account.
-func (s *Server) handlePINLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Phone string `json:"phone"`
-		PIN   string `json:"pin"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		return
-	}
-
-	if req.Phone == "" || req.PIN == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone and pin are required"})
-		return
-	}
-
-	// Check phone whitelist
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
-		return
-	}
-
-	acct := s.sessions.GetAccount(req.Phone)
-	if acct == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no active account for this phone"})
-		return
-	}
-
-	if len(acct.PINHash) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no PIN set for this account"})
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword(acct.PINHash, []byte(req.PIN)); err != nil {
-		s.logger.Warn("PIN login failed", "phone", req.Phone)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "incorrect PIN"})
-		return
-	}
-
-	// Create a new session reusing the existing account
-	session, err := s.sessions.CreateSession(req.Phone, acct.Auth, s.logger)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session"})
-		return
-	}
-
-	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
-	s.PersistSessions()
-
-	s.logger.Info("PIN login successful", "phone", req.Phone)
-	userID := gm.PhoneToHermesUserID(req.Phone)
-	writeJSON(w, http.StatusOK, authStatusResponse{
-		LoggedIn: true,
-		Phone:    &req.Phone,
-		UserID:   &userID,
-	})
-}
-
-// handleSetPIN sets a PIN on an already-active account that doesn't have one yet.
-// Requires an existing valid session cookie.
-func (s *Server) handleSetPIN(w http.ResponseWriter, r *http.Request) {
-	session := getSession(r.Context())
-	if session == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	var req struct {
-		PIN string `json:"pin"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		return
-	}
-
-	if len(req.PIN) < 4 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "PIN must be at least 4 characters"})
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.PIN), bcrypt.DefaultCost)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
-		return
-	}
-
-	session.Account.PINHash = hash
-	s.PersistSessions()
-	s.logger.Info("PIN set for account", "phone", session.Account.Phone)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
