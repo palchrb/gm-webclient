@@ -402,6 +402,7 @@ async function loadConversations() {
         lastConversationCursor = resp.lastConversationId || null;
         hasMoreConversations = !!lastConversationCursor;
         cache.set('conversations', state.conversations);
+        computeOfflineUnread(); // badge conversations updated while we were offline
         renderConversations();
         for (const conv of state.conversations) {
             loadMembers(conv.conversationId);
@@ -486,6 +487,7 @@ async function loadMembers(convId) {
 async function selectConversation(convId) {
     state.currentConversationId = convId;
     delete unreadCounts[convId]; // Clear unread badge
+    setLastSeen(convId);
     renderConversations(); // Update badge display
 
     document.getElementById('no-conversation').classList.add('hidden');
@@ -1041,6 +1043,28 @@ function connectSSE() {
 const unreadCounts = {};
 let lastHandledMessageId = '';
 
+// Persistent "last seen" per conversation — survives page close
+function getLastSeen(convId) {
+    try { return localStorage.getItem('gm_seen_' + convId) || ''; } catch { return ''; }
+}
+function setLastSeen(convId) {
+    try { localStorage.setItem('gm_seen_' + convId, new Date().toISOString()); } catch {}
+}
+
+// On load: mark conversations as unread if updatedDate > lastSeen
+function computeOfflineUnread() {
+    for (const conv of state.conversations) {
+        const lastSeen = getLastSeen(conv.conversationId);
+        if (!lastSeen) continue; // never opened — don't badge
+        if (conv.updatedDate && conv.updatedDate > lastSeen) {
+            // Don't override live SSE counts
+            if (!unreadCounts[conv.conversationId]) {
+                unreadCounts[conv.conversationId] = -1; // -1 = "dot" (unknown count)
+            }
+        }
+    }
+}
+
 function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
 
@@ -1049,7 +1073,9 @@ function handleIncomingMessage(msg) {
     if (msg.messageId) lastHandledMessageId = msg.messageId;
 
     // Track unread for conversations we're not currently viewing (skip own messages)
-    if (state.currentConversationId !== convId && !isMine(msg)) {
+    if (state.currentConversationId === convId) {
+        setLastSeen(convId); // keep "last seen" fresh for the active conversation
+    } else if (!isMine(msg)) {
         unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
     }
 
@@ -1112,7 +1138,11 @@ function renderConversations() {
         const initial = name.charAt(0).toUpperCase();
         const time = formatTime(conv.updatedDate);
         const unread = unreadCounts[conv.conversationId] || 0;
-        const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread}</span>` : '';
+        const unreadBadge = unread > 0
+            ? `<span class="unread-badge">${unread}</span>`
+            : unread === -1
+                ? `<span class="unread-badge">&bull;</span>`
+                : '';
 
         return `
             <div class="conversation-item ${active}" onclick="selectConversation('${conv.conversationId}')">
