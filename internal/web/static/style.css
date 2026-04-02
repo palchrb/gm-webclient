@@ -192,14 +192,13 @@ body {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    padding-left: env(safe-area-inset-left, 0px);
 }
 
 .sidebar-header {
     padding: 16px;
+    padding-top: calc(16px + env(safe-area-inset-top, 0px));
     border-bottom: 1px solid var(--border);
-}
-
-.sidebar-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
