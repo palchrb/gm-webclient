@@ -209,10 +209,19 @@ func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logg
 	})
 
 	if acct.FCM != nil {
+		// Deduplicate FCM messages — Garmin sends the same message via
+		// multiple FCM channels, producing 5+ duplicates per message.
+		lastFCMMessageID := ""
 		acct.FCM.OnMessage(func(msg fcm.NewMessage) {
+			msgID := msg.MessageID.String()
+			if msgID == lastFCMMessageID {
+				sm.logger.Debug("FCM→SSE: skipping duplicate", "messageId", msgID)
+				return
+			}
+			lastFCMMessageID = msgID
 			sm.logger.Info("FCM→SSE: publishing new message",
 				"phone", phone,
-				"messageId", msg.MessageID.String(),
+				"messageId", msgID,
 				"sseSubscribers", acct.SSE.SubscriberCount(),
 			)
 			acct.SSE.Publish(SSEEvent{Type: "message", Data: msg.MessageModel})
