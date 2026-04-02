@@ -1,4 +1,13 @@
-// Service Worker for Garmin Messenger Web Push notifications
+// Service Worker for Garmin Messenger Web — Push notifications + PWA
+
+// Keep service worker alive for Firefox background push
+self.addEventListener('install', function(event) {
+    self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event) {
+    event.waitUntil(clients.claim());
+});
 
 self.addEventListener('push', function(event) {
     if (!event.data) return;
@@ -13,7 +22,10 @@ self.addEventListener('push', function(event) {
     var title = data.title || 'Garmin Messenger';
     var options = {
         body: data.body || 'New message',
+        icon: '/manifest.json',
+        badge: '/manifest.json',
         tag: data.conversationId || 'default',
+        renotify: true,
         data: {
             conversationId: data.conversationId,
             url: '/'
