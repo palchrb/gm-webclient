@@ -169,7 +169,8 @@ function base64urlToBuffer(b64) {
     return bytes.buffer;
 }
 
-async function registerPasskey() {
+// mode: 'replace' (default, mandatory setup) or 'add' (additional passkey)
+async function registerPasskey(mode) {
     setLoading(true);
     hideError();
 
@@ -196,7 +197,8 @@ async function registerPasskey() {
             },
         });
 
-        const resp = await fetch('/api/passkey/register/finish', {
+        const finishUrl = '/api/passkey/register/finish' + (mode === 'add' ? '?mode=add' : '');
+        const resp = await fetch(finishUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body,
@@ -206,9 +208,9 @@ async function registerPasskey() {
             throw new Error(err.error || 'Passkey registration failed');
         }
 
-        console.log('Passkey registered successfully');
+        console.log('Passkey registered (' + (mode || 'replace') + ')');
 
-        // Enter chat with the pending login state
+        // Enter chat with the pending login state (mandatory setup flow)
         if (state._pendingLogin) {
             enterChat(state._pendingLogin);
             delete state._pendingLogin;
@@ -334,9 +336,14 @@ async function addPasskey() {
         alert('Passkeys are not supported in this browser.');
         return;
     }
+    const mode = confirm(
+        'Add this passkey alongside existing ones?\n\n' +
+        'OK = Add (keep existing passkeys)\n' +
+        'Cancel = Replace all existing passkeys'
+    ) ? 'add' : 'replace';
     try {
-        await registerPasskey();
-        alert('Passkey registered successfully!');
+        await registerPasskey(mode);
+        alert('Passkey registered!');
     } catch (e) {
         // registerPasskey already handles errors
     }
@@ -1027,8 +1034,8 @@ const unreadCounts = {};
 function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
 
-    // Track unread for conversations we're not currently viewing
-    if (state.currentConversationId !== convId) {
+    // Track unread for conversations we're not currently viewing (skip own messages)
+    if (state.currentConversationId !== convId && !isMine(msg)) {
         unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
     }
 
