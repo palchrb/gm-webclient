@@ -1035,7 +1035,9 @@ function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
 
     // Track unread for conversations we're not currently viewing (skip own messages)
-    if (state.currentConversationId !== convId && !isMine(msg)) {
+    const mine = isMine(msg);
+    console.log('handleIncomingMessage', { convId, currentConv: state.currentConversationId, from: msg.from, mine, userId: state.userId, phone: state.phone });
+    if (state.currentConversationId !== convId && !mine) {
         unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
     }
 
