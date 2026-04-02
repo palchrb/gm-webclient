@@ -629,25 +629,24 @@ function addOptimisticMessage(convId, messageId, body, sendState) {
         _sendState: sendState || 'sent',
     };
     state.messages.push(msg);
-    // Append to DOM without full re-render to preserve scroll position
-    const container = document.getElementById('messages');
-    const div = document.createElement('div');
-    div.className = 'message-group sent';
-    div.innerHTML = `<div class="message sent" data-msgid="${messageId}">
-        <div class="message-text">${escapeHtml(body)}</div>
-        <div class="message-meta"><span class="message-time">${formatTime(msg.sentAt)}</span> <span class="message-status">&#8987;</span></div>
-    </div>`;
-    container.appendChild(div);
+    appendMessageToDOM(msg);
     scrollToBottom(true);
 }
 
 // Replace a temporary optimistic message with the real server ID.
+// Updates DOM in-place to avoid full re-render scroll jump.
 function replaceOptimisticMessage(convId, tempId, realId, sendState) {
     const msg = state.messages.find(m => m.messageId === tempId);
     if (msg) {
         msg.messageId = realId;
         msg._sendState = sendState || 'sent';
-        renderMessages();
+        // Update the DOM element in-place instead of full re-render
+        const el = document.querySelector(`[data-msgid="${tempId}"]`);
+        if (el) {
+            el.dataset.msgid = realId;
+            const statusEl = el.querySelector('.message-status');
+            if (statusEl) statusEl.innerHTML = '&#10003;'; // ✓
+        }
     }
 }
 
@@ -1102,12 +1101,11 @@ function handleIncomingMessage(msg) {
 
     // If viewing this conversation, append message
     if (state.currentConversationId === convId) {
-        // Avoid duplicates
+        // Avoid duplicates (including optimistic messages already shown)
         if (!state.messages.find(m => m.messageId === msg.messageId)) {
             state.messages.push(msg);
-            // Update message cache with live data
             cache.set('msgs_' + convId, state.messages);
-            renderMessages();
+            appendMessageToDOM(msg);
             scrollToBottom();
             markAsRead(convId, msg.messageId);
         }
@@ -1253,60 +1251,7 @@ function renderMessages() {
             lastDate = date;
         }
 
-        const isSent = isMine(msg);
-        const cls = isSent ? 'sent' : 'received';
-        const sendState = msg._sendState || '';
-        const failedCls = sendState === 'failed' ? ' message-failed' : '';
-        const sendingCls = sendState === 'sending' ? ' message-sending' : '';
-        const senderName = !isSent ? getSenderName(msg) : null;
-        const body = getMessageBody(msg);
-        const time = formatMessageTime(msg.sentAt || msg.receivedAt);
-        const location = getLocationHtml(msg);
-        const device = getDeviceLabel(msg);
-        const mediaHtml = getMediaHtml(msg, state.currentConversationId);
-        const transcription = msg.transcription
-            ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
-
-        let statusIcon = '';
-        if (sendState === 'sending') {
-            statusIcon = '...';
-        } else if (sendState === 'failed') {
-            statusIcon = '!';
-        } else if (isSent) {
-            statusIcon = getStatusIcon(msg);
-        }
-
-        const errorHtml = msg._errorMsg
-            ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
-
-        // Render reaction badges (merge parsed reactions + optimistic ones)
-        const msgReactions = [...(reactions[msg.messageId] || []), ...(msg._reactions || [])];
-        let reactionsHtml = '';
-        if (msgReactions.length > 0) {
-            const counts = {};
-            for (const r of msgReactions) {
-                counts[r.emoji] = (counts[r.emoji] || 0) + 1;
-            }
-            const badges = Object.entries(counts).map(([emoji, count]) =>
-                `<span class="reaction-badge">${emoji}${count > 1 ? ' ' + count : ''}</span>`
-            ).join('');
-            reactionsHtml = `<div class="reaction-badges">${badges}</div>`;
-        }
-
-        html += `
-            <div class="message ${cls}${failedCls}${sendingCls}">
-                ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
-                <div class="message-bubble">${mediaHtml}${body ? `<div class="message-text">${escapeHtml(body)}</div>` : ''}${location}${transcription}</div>
-                ${reactionsHtml}
-                <div class="message-meta">
-                    <span>${time}</span>
-                    ${device ? `<span class="message-device">${device}</span>` : ''}
-                    ${statusIcon ? `<span class="message-status ${sendState === 'failed' ? 'failed' : getStatusClass(msg)}">${statusIcon}</span>` : ''}
-                    ${!sendState ? `<button class="react-btn" onclick="showReactionPicker('${msg.messageId}')" title="React">+</button>` : ''}
-                </div>
-                ${errorHtml}
-            </div>
-        `;
+        html += renderSingleMessage(msg, reactions);
     }
 
     container.innerHTML = html;
@@ -1314,6 +1259,76 @@ function renderMessages() {
     // Load media asynchronously after rendering
     loadMediaForMessages();
 }
+
+// Render a single message to HTML string.
+function renderSingleMessage(msg, reactions) {
+    const isSent = isMine(msg);
+    const cls = isSent ? 'sent' : 'received';
+    const sendState = msg._sendState || '';
+    const failedCls = sendState === 'failed' ? ' message-failed' : '';
+    const sendingCls = sendState === 'sending' ? ' message-sending' : '';
+    const senderName = !isSent ? getSenderName(msg) : null;
+    const body = getMessageBody(msg);
+    const time = formatMessageTime(msg.sentAt || msg.receivedAt);
+    const location = getLocationHtml(msg);
+    const device = getDeviceLabel(msg);
+    const mediaHtml = getMediaHtml(msg, state.currentConversationId);
+    const transcription = msg.transcription
+        ? `<div class="message-transcription">${escapeHtml(msg.transcription)}</div>` : '';
+
+    let statusIcon = '';
+    if (sendState === 'sending') {
+        statusIcon = '...';
+    } else if (sendState === 'failed') {
+        statusIcon = '!';
+    } else if (isSent) {
+        statusIcon = getStatusIcon(msg);
+    }
+
+    const errorHtml = msg._errorMsg
+        ? `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>` : '';
+
+    const msgReactions = [...((reactions || {})[msg.messageId] || []), ...(msg._reactions || [])];
+    let reactionsHtml = '';
+    if (msgReactions.length > 0) {
+        const counts = {};
+        for (const r of msgReactions) {
+            counts[r.emoji] = (counts[r.emoji] || 0) + 1;
+        }
+        const badges = Object.entries(counts).map(([emoji, count]) =>
+            `<span class="reaction-badge">${emoji}${count > 1 ? ' ' + count : ''}</span>`
+        ).join('');
+        reactionsHtml = `<div class="reaction-badges">${badges}</div>`;
+    }
+
+    return `
+        <div class="message ${cls}${failedCls}${sendingCls}" data-msgid="${msg.messageId}">
+            ${senderName ? `<div class="message-sender">${escapeHtml(senderName)}</div>` : ''}
+            <div class="message-bubble">${mediaHtml}${body ? `<div class="message-text">${escapeHtml(body)}</div>` : ''}${location}${transcription}</div>
+            ${reactionsHtml}
+            <div class="message-meta">
+                <span>${time}</span>
+                ${device ? `<span class="message-device">${device}</span>` : ''}
+                ${statusIcon ? `<span class="message-status ${sendState === 'failed' ? 'failed' : getStatusClass(msg)}">${statusIcon}</span>` : ''}
+                ${!sendState ? `<button class="react-btn" onclick="showReactionPicker('${msg.messageId}')" title="React">+</button>` : ''}
+            </div>
+            ${errorHtml}
+        </div>`;
+}
+
+// Append a single message to the DOM without re-rendering everything.
+function appendMessageToDOM(msg) {
+    const container = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.innerHTML = renderSingleMessage(msg, {});
+    container.appendChild(div.firstElementChild);
+    // Load media for just this message
+    if (msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000' && msg.mediaType) {
+        loadMediaForMessages();
+    }
+    scrollToBottom();
+}
+
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getConversationName(conv) {
