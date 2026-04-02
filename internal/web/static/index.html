@@ -54,7 +54,7 @@
             <div class="header-right">
                 <span id="user-phone" class="user-phone"></span>
                 <button class="header-btn" onclick="requestNotificationPermission()" title="Enable notifications">&#128276;</button>
-                <button class="logout-btn" onclick="logout()">Log out</button>
+                <button class="header-btn" onclick="showAccountMenu()" title="Account">&#9881;</button>
             </div>
         </header>
 
@@ -113,6 +113,34 @@
                     </div>
                 </div>
             </main>
+        </div>
+    </div>
+
+    <!-- Account Menu Modal -->
+    <div id="account-modal" class="modal hidden" onclick="if(event.target===this)hideAccountMenu()">
+        <div class="modal-content">
+            <h3>Account</h3>
+            <div class="account-menu">
+                <button class="account-menu-btn" onclick="addPasskey()">
+                    &#128273; Register new passkey
+                </button>
+                <button class="account-menu-btn" onclick="logoutThis()">
+                    &#8617; Log out this browser
+                </button>
+                <button class="account-menu-btn account-menu-danger" onclick="showLogoutAllConfirm()">
+                    &#9888; Log out everywhere
+                </button>
+                <div id="logout-all-confirm" class="hidden" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                    <p style="font-size:0.85em;margin-bottom:8px">This will disconnect from Garmin and log out all browsers.</p>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.85em;margin-bottom:12px">
+                        <input type="checkbox" id="clear-passkeys-check"> Also remove passkeys
+                    </label>
+                    <div class="modal-actions">
+                        <button class="btn-secondary" onclick="hideAccountMenu()">Cancel</button>
+                        <button class="btn-primary" style="background:#e53e3e" onclick="logoutAll()">Confirm</button>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 

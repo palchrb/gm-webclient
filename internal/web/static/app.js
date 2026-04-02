@@ -312,8 +312,37 @@ async function requestReauthOTP() {
     }
 }
 
-async function logout() {
-    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+// ─── Account Menu ────────────────────────────────────────────────────────────
+
+function showAccountMenu() {
+    document.getElementById('logout-all-confirm').classList.add('hidden');
+    document.getElementById('clear-passkeys-check').checked = false;
+    document.getElementById('account-modal').classList.remove('hidden');
+}
+
+function hideAccountMenu() {
+    document.getElementById('account-modal').classList.add('hidden');
+}
+
+function showLogoutAllConfirm() {
+    document.getElementById('logout-all-confirm').classList.remove('hidden');
+}
+
+async function addPasskey() {
+    hideAccountMenu();
+    if (!window.PublicKeyCredential) {
+        alert('Passkeys are not supported in this browser.');
+        return;
+    }
+    try {
+        await registerPasskey();
+        alert('Passkey registered successfully!');
+    } catch (e) {
+        // registerPasskey already handles errors
+    }
+}
+
+function doLogoutCleanup() {
     if (state.eventSource) state.eventSource.close();
     cache.clear();
     state.loggedIn = false;
@@ -322,6 +351,24 @@ async function logout() {
     state.currentConversationId = null;
     state.messages = [];
     location.reload();
+}
+
+async function logoutThis() {
+    hideAccountMenu();
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+    doLogoutCleanup();
+}
+
+async function logoutAll() {
+    const clearPasskeys = document.getElementById('clear-passkeys-check').checked;
+    hideAccountMenu();
+    try {
+        await api('/api/auth/logout-all', {
+            method: 'POST',
+            body: { clearPasskeys },
+        });
+    } catch (e) { /* ignore */ }
+    doLogoutCleanup();
 }
 
 // ─── Conversations ───────────────────────────────────────────────────────────

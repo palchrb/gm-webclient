@@ -244,6 +244,34 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
+// handleLogoutAll removes ALL sessions for this phone, stops the Garmin account,
+// deregisters with Garmin, and optionally clears passkeys.
+func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+	if session == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		ClearPasskeys bool `json:"clearPasskeys"`
+	}
+	json.NewDecoder(r.Body).Decode(&req) // optional body
+
+	phone := session.Account.Phone
+	s.sessions.RemoveAllForPhone(phone)
+
+	if req.ClearPasskeys && s.passkeyStore != nil {
+		s.passkeyStore.Save(phone, nil)
+		s.logger.Info("Passkeys cleared", "phone", phone)
+	}
+
+	s.PersistSessions()
+	ClearSessionCookie(w)
+	s.logger.Info("Full logout: all sessions + Garmin deregistered", "phone", phone, "passkeysCleared", req.ClearPasskeys)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
