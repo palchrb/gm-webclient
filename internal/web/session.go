@@ -401,6 +401,22 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.logger.Info("Session removed", "phone", phone, "accountStopped", !accountInUse)
 }
 
+// RemoveAllForPhone removes ALL sessions for a phone and stops the Garmin account.
+func (sm *SessionManager) RemoveAllForPhone(phone string) {
+	sm.mu.Lock()
+	for id, s := range sm.sessions {
+		if s.Account.Phone == phone {
+			delete(sm.sessions, id)
+		}
+	}
+	if acct, ok := sm.accounts[phone]; ok {
+		sm.stopAccount(acct)
+		delete(sm.accounts, phone)
+	}
+	sm.mu.Unlock()
+	sm.logger.Info("All sessions removed + account stopped", "phone", phone)
+}
+
 // stopAccount shuts down all connections for an account and deregisters with Garmin.
 func (sm *SessionManager) stopAccount(acct *UserAccount) {
 	acct.SignalR.Stop()

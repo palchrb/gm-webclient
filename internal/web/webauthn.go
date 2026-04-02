@@ -121,8 +121,13 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Replace all existing credentials (fresh passkey setup)
-	s.passkeyStore.Save(phone, []webauthn.Credential{*cred})
+	// Add to existing or replace all credentials
+	if r.URL.Query().Get("mode") == "add" {
+		existing := s.passkeyStore.Load(phone)
+		s.passkeyStore.Save(phone, append(existing, *cred))
+	} else {
+		s.passkeyStore.Save(phone, []webauthn.Credential{*cred})
+	}
 	s.logger.Info("Passkey registered", "phone", phone)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

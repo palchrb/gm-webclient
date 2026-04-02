@@ -659,6 +659,26 @@ body {
 
 .btn-secondary:hover { background: var(--bg-hover); }
 
+/* ─── Account Menu ─── */
+.account-menu { display: flex; flex-direction: column; gap: 4px; }
+.account-menu-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 14px;
+    text-align: left;
+}
+.account-menu-btn:hover { background: var(--bg-hover); }
+.account-menu-danger { color: #e53e3e; }
+.account-menu-danger:hover { background: rgba(229, 62, 62, 0.1); }
+
 /* ─── Media Preview ─── */
 .media-preview {
     display: flex;

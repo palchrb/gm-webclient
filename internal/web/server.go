@@ -172,6 +172,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/auth/request-reauth-otp", s.handleRequestReauthOTP)
 	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	s.mux.HandleFunc("POST /api/auth/logout", s.requireSession(s.handleLogout))
+	s.mux.HandleFunc("POST /api/auth/logout-all", s.requireSession(s.handleLogoutAll))
 
 	// API endpoints (session required)
 	s.mux.HandleFunc("GET /api/conversations", s.requireSession(s.handleGetConversations))
