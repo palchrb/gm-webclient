@@ -90,23 +90,20 @@ async function requestOTP() {
 
     try {
         const resp = await api('/api/auth/request-otp', { method: 'POST', body: { phone } });
-        if (resp.alreadyActive) {
-            // Account already authenticated — rejoin without OTP
-            const joinResp = await api('/api/auth/rejoin', { method: 'POST', body: { phone } });
-            state.loggedIn = true;
-            state.phone = joinResp.phone;
-            state.userId = joinResp.userId;
-            showChatView();
-            loadConversations();
-            connectSSE();
-            setupPushNotifications();
-            setupClipboardPaste();
-            return;
-        }
         document.getElementById('phone-step').classList.add('hidden');
-        document.getElementById('otp-step').classList.remove('hidden');
-        document.getElementById('otp-phone').textContent = phone;
-        document.getElementById('otp-input').focus();
+
+        if (resp.needPin) {
+            // Account active with PIN — show PIN login
+            document.getElementById('pin-step').classList.remove('hidden');
+            document.getElementById('pin-phone').textContent = phone;
+            document.getElementById('pin-input').focus();
+        } else {
+            // Normal OTP flow — also offer to set a PIN for future logins
+            document.getElementById('otp-step').classList.remove('hidden');
+            document.getElementById('otp-phone').textContent = phone;
+            document.getElementById('otp-pin-input').classList.remove('hidden');
+            document.getElementById('otp-input').focus();
+        }
     } catch (e) {
         showError(e.message || 'Could not send code');
     } finally {
@@ -119,11 +116,14 @@ async function confirmOTP() {
     const code = document.getElementById('otp-input').value.trim();
     if (!phone || !code) return;
 
+    const pin = document.getElementById('otp-pin-input').value.trim();
     setLoading(true);
     hideError();
 
     try {
-        const resp = await api('/api/auth/confirm-otp', { method: 'POST', body: { phone, code } });
+        const body = { phone, code };
+        if (pin) body.pin = pin;
+        const resp = await api('/api/auth/confirm-otp', { method: 'POST', body });
         state.loggedIn = true;
         state.phone = resp.phone;
         state.userId = resp.userId;
@@ -137,6 +137,32 @@ async function confirmOTP() {
         setLoading(false);
     }
 }
+
+async function pinLogin() {
+    const phone = document.getElementById('phone-input').value.trim();
+    const pin = document.getElementById('pin-input').value.trim();
+    if (!phone || !pin) return;
+
+    setLoading(true);
+    hideError();
+
+    try {
+        const resp = await api('/api/auth/pin-login', { method: 'POST', body: { phone, pin } });
+        state.loggedIn = true;
+        state.phone = resp.phone;
+        state.userId = resp.userId;
+        showChatView();
+        loadConversations();
+        connectSSE();
+        setupPushNotifications();
+        setupClipboardPaste();
+    } catch (e) {
+        showError(e.message || 'Incorrect PIN');
+    } finally {
+        setLoading(false);
+    }
+}
+
 
 async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }

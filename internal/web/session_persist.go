@@ -30,6 +30,7 @@ type persistedSession struct {
 	RefreshToken string  `json:"refreshToken"`
 	InstanceID   string  `json:"instanceId"`
 	ExpiresAt    float64 `json:"expiresAt"`
+	PINHash      []byte  `json:"pinHash,omitempty"`
 }
 
 func NewSessionStore(dataDir, sessionKey string, logger *slog.Logger) (*SessionStore, error) {
@@ -60,6 +61,7 @@ func (ss *SessionStore) Save(sessions map[string]*UserSession) {
 			RefreshToken: s.Account.Auth.RefreshToken,
 			InstanceID:   s.Account.Auth.InstanceID,
 			ExpiresAt:    s.Account.Auth.ExpiresAt,
+			PINHash:      s.Account.PINHash,
 		})
 	}
 
@@ -167,6 +169,11 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 				sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
 				validatedPhones[entry.Phone] = false
 				continue
+			}
+
+			// Restore PIN hash
+			if len(entry.PINHash) > 0 {
+				session.Account.PINHash = entry.PINHash
 			}
 
 			sm.mu.Lock()

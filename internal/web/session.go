@@ -47,6 +47,8 @@ type UserAccount struct {
 	PushSubscriptions map[string]*webpush.Subscription
 	pushMu            sync.RWMutex
 
+	PINHash []byte // bcrypt hash, empty if no PIN set yet
+
 	mu             sync.Mutex
 	signalRCancel  context.CancelFunc
 	fcmCancel      context.CancelFunc
@@ -347,14 +349,6 @@ func (sm *SessionManager) EnsureFCM(acct *UserAccount) {
 			}
 		}
 	}()
-}
-
-// HasActiveAccount returns true if there is an active account for the given phone.
-func (sm *SessionManager) HasActiveAccount(phone string) bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	_, ok := sm.accounts[phone]
-	return ok
 }
 
 // GetAccount returns the active account for a phone, or nil.

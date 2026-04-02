@@ -26,7 +26,15 @@
             <div id="otp-step" class="hidden">
                 <p class="otp-info">Code sent to <span id="otp-phone"></span></p>
                 <input type="text" id="otp-input" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+                <input type="password" id="otp-pin-input" class="hidden" placeholder="Choose a PIN (min 4 chars)" autocomplete="new-password">
                 <button id="confirm-otp-btn" onclick="confirmOTP()">Confirm</button>
+            </div>
+
+            <div id="pin-step" class="hidden">
+                <p class="otp-info">Enter PIN for <span id="pin-phone"></span></p>
+                <input type="password" id="pin-input" placeholder="PIN" autocomplete="current-password">
+                <button id="pin-login-btn" onclick="pinLogin()">Sign in</button>
+                <p class="otp-info" style="margin-top:8px;font-size:0.85em;opacity:0.7">Forgot PIN? Use the Garmin app to deregister this device, then log in again with OTP.</p>
             </div>
 
             <div id="login-error" class="error hidden"></div>
