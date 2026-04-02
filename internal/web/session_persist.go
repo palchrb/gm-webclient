@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
@@ -25,14 +24,12 @@ type SessionStore struct {
 
 // persistedSession is the plaintext structure written (after encryption) to disk.
 type persistedSession struct {
-	SessionID     string                 `json:"sessionId"`
-	Phone         string                 `json:"phone"`
-	AccessToken   string                 `json:"accessToken"`
-	RefreshToken  string                 `json:"refreshToken"`
-	InstanceID    string                 `json:"instanceId"`
-	ExpiresAt     float64                `json:"expiresAt"`
-	PINHash       []byte                 `json:"pinHash,omitempty"`
-	WebAuthnCreds []webauthn.Credential  `json:"webauthnCreds,omitempty"`
+	SessionID    string  `json:"sessionId"`
+	Phone        string  `json:"phone"`
+	AccessToken  string  `json:"accessToken"`
+	RefreshToken string  `json:"refreshToken"`
+	InstanceID   string  `json:"instanceId"`
+	ExpiresAt    float64 `json:"expiresAt"`
 }
 
 func NewSessionStore(dataDir, sessionKey string, logger *slog.Logger) (*SessionStore, error) {
@@ -56,20 +53,13 @@ func (ss *SessionStore) path() string {
 func (ss *SessionStore) Save(sessions map[string]*UserSession) {
 	entries := make([]persistedSession, 0, len(sessions))
 	for _, s := range sessions {
-		s.Account.credMu.RLock()
-		creds := make([]webauthn.Credential, len(s.Account.WebAuthnCreds))
-		copy(creds, s.Account.WebAuthnCreds)
-		s.Account.credMu.RUnlock()
-
 		entries = append(entries, persistedSession{
-			SessionID:     s.ID,
-			Phone:         s.Account.Phone,
-			AccessToken:   s.Account.Auth.AccessToken,
-			RefreshToken:  s.Account.Auth.RefreshToken,
-			InstanceID:    s.Account.Auth.InstanceID,
-			ExpiresAt:     s.Account.Auth.ExpiresAt,
-			PINHash:       s.Account.PINHash,
-			WebAuthnCreds: creds,
+			SessionID:    s.ID,
+			Phone:        s.Account.Phone,
+			AccessToken:  s.Account.Auth.AccessToken,
+			RefreshToken: s.Account.Auth.RefreshToken,
+			InstanceID:   s.Account.Auth.InstanceID,
+			ExpiresAt:    s.Account.Auth.ExpiresAt,
 		})
 	}
 
@@ -128,92 +118,61 @@ func (ss *SessionStore) Delete() {
 }
 
 // RestoreSessions recreates sessions from encrypted storage.
-// Multiple sessions for the same phone share one account.
-// Validates credentials only once per phone number (not per session).
+// With hard pruning, only one session per phone is kept (the first valid one).
 func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logger) int {
 	entries := store.Load()
 	if len(entries) == 0 {
 		return 0
 	}
 
-	// Group entries by phone — validate and create account only once per phone
-	validatedPhones := map[string]bool{} // phone → validated ok
+	// Only restore one session per phone (the first valid one)
+	restoredPhones := map[string]bool{}
 	restored := 0
 
 	for _, entry := range entries {
-		// Skip phones that already failed validation
-		if validated, exists := validatedPhones[entry.Phone]; exists && !validated {
+		// Skip already-restored phones (hard prune)
+		if restoredPhones[entry.Phone] {
+			sm.logger.Info("Skipping duplicate session for phone (hard prune)", "phone", entry.Phone)
 			continue
 		}
 
-		// First session for this phone — validate credentials
-		if _, exists := validatedPhones[entry.Phone]; !exists {
-			auth := gm.NewHermesAuth(gm.WithLogger(logger))
-			auth.AccessToken = entry.AccessToken
-			auth.RefreshToken = entry.RefreshToken
-			auth.InstanceID = entry.InstanceID
-			auth.ExpiresAt = entry.ExpiresAt
+		auth := gm.NewHermesAuth(gm.WithLogger(logger))
+		auth.AccessToken = entry.AccessToken
+		auth.RefreshToken = entry.RefreshToken
+		auth.InstanceID = entry.InstanceID
+		auth.ExpiresAt = entry.ExpiresAt
 
-			if auth.TokenExpired() {
-				if err := auth.RefreshHermesToken(context.Background()); err != nil {
-					sm.logger.Warn("Restored session expired, skipping phone",
-						"phone", entry.Phone, "error", err)
-					validatedPhones[entry.Phone] = false
-					continue
-				}
-			}
-
-			api := gm.NewHermesAPI(auth, gm.WithAPILogger(logger))
-			if _, err := api.GetConversations(context.Background(), gm.WithLimit(1)); err != nil {
-				sm.logger.Warn("Restored session credentials invalid, skipping phone",
+		if auth.TokenExpired() {
+			if err := auth.RefreshHermesToken(context.Background()); err != nil {
+				sm.logger.Warn("Restored session expired, skipping",
 					"phone", entry.Phone, "error", err)
-				validatedPhones[entry.Phone] = false
 				continue
 			}
+		}
 
-			// Create the account (first session creates it)
-			session, err := sm.CreateSession(entry.Phone, auth, logger)
-			if err != nil {
-				sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
-				validatedPhones[entry.Phone] = false
-				continue
-			}
-
-			// Restore PIN hash and passkey credentials
-			if len(entry.PINHash) > 0 {
-				session.Account.PINHash = entry.PINHash
-			}
-			if len(entry.WebAuthnCreds) > 0 {
-				session.Account.WebAuthnCreds = entry.WebAuthnCreds
-			}
-
-			sm.mu.Lock()
-			delete(sm.sessions, session.ID)
-			session.ID = entry.SessionID
-			sm.sessions[entry.SessionID] = session
-			sm.mu.Unlock()
-
-			validatedPhones[entry.Phone] = true
-			restored++
-			sm.logger.Info("Restored browser cookie (new account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
+		api := gm.NewHermesAPI(auth, gm.WithAPILogger(logger))
+		if _, err := api.GetConversations(context.Background(), gm.WithLimit(1)); err != nil {
+			sm.logger.Warn("Restored session credentials invalid, skipping",
+				"phone", entry.Phone, "error", err)
 			continue
 		}
 
-		// Additional browser cookie for an already-validated phone
-		session, err := sm.CreateSession(entry.Phone,
-			sm.accounts[entry.Phone].Auth, logger)
+		session, err := sm.CreateSession(entry.Phone, auth, logger)
 		if err != nil {
+			sm.logger.Warn("Failed to recreate session", "phone", entry.Phone, "error", err)
 			continue
 		}
 
+		// Replace auto-generated session ID with the persisted one
 		sm.mu.Lock()
 		delete(sm.sessions, session.ID)
 		session.ID = entry.SessionID
 		sm.sessions[entry.SessionID] = session
 		sm.mu.Unlock()
 
+		restoredPhones[entry.Phone] = true
 		restored++
-		sm.logger.Info("Restored browser cookie (existing account)", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
+		sm.logger.Info("Restored session", "phone", entry.Phone, "cookieId", entry.SessionID[:8]+"...")
 	}
 
 	return restored

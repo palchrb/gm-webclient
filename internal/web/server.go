@@ -18,8 +18,9 @@ type Server struct {
 	sessionStore   *SessionStore // nil when SESSION_KEY is not set
 	vapidKeys      *VAPIDKeys
 	pushStore      *PushSubscriptionStore
-	webAuthn       *webauthn.WebAuthn // nil when ORIGIN is not set
-	pushAlways     bool               // send web push even when browser tabs are open
+	passkeyStore   *PasskeyStore          // nil when dataDir is empty
+	webAuthn       *webauthn.WebAuthn     // nil when ORIGIN is not set
+	pushAlways     bool                   // send web push even when browser tabs are open
 	logger         *slog.Logger
 	mux            *http.ServeMux
 	phoneWhitelist map[string]bool // nil = allow all, non-nil = only listed phones
@@ -29,8 +30,6 @@ type Server struct {
 type ServerOption func(*Server)
 
 // WithPhoneWhitelist restricts login to the specified phone numbers.
-// Phone numbers should include the country code (e.g. "+4712345678").
-// An empty list disables the whitelist (allows all).
 func WithPhoneWhitelist(phones []string) ServerOption {
 	return func(s *Server) {
 		if len(phones) == 0 {
@@ -54,7 +53,6 @@ func WithSessionDays(days int) ServerOption {
 
 // WithPushAlways controls whether web push notifications are sent even when
 // browser tabs are open. When true (default), push is always sent.
-// When false, push is only sent when no SSE tabs are connected.
 func WithPushAlways(always bool) ServerOption {
 	return func(s *Server) {
 		s.pushAlways = always
@@ -63,7 +61,6 @@ func WithPushAlways(always bool) ServerOption {
 
 // WithOrigin configures WebAuthn passkey support using the given origin URL
 // (e.g. "https://garmin.tailnet.ts.net" or "http://localhost:8080").
-// Without this, passkeys are disabled and PIN login is used as fallback.
 func WithOrigin(origin string) ServerOption {
 	return func(s *Server) {
 		wa := InitWebAuthn(origin)
@@ -77,8 +74,6 @@ func WithOrigin(origin string) ServerOption {
 }
 
 // WithSessionKey enables encrypted session persistence using the given key.
-// Sessions are AES-256-GCM encrypted and stored in the data directory.
-// Without this, sessions live only in memory and are lost on restart.
 func WithSessionKey(key string) ServerOption {
 	return func(s *Server) {
 		if key == "" || s.sessions.fcmDataDir == "" {
@@ -94,21 +89,22 @@ func WithSessionKey(key string) ServerOption {
 }
 
 // NewServer creates a new web server.
-// dataDir is the base directory for persistent data (FCM creds, VAPID keys, push subscriptions).
-// Empty disables FCM and push.
 func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts ...ServerOption) *Server {
 	var pushStore *PushSubscriptionStore
+	var passkeyStore *PasskeyStore
 	if dataDir != "" {
 		pushStore = NewPushSubscriptionStore(dataDir)
+		passkeyStore = NewPasskeyStore(dataDir)
 	}
 
 	s := &Server{
-		sessions:   NewSessionManager(logger, dataDir, defaultSessionDays),
-		vapidKeys:  vapidKeys,
-		pushStore:  pushStore,
-		pushAlways: true, // default: always send push, even with active tabs
-		logger:     logger,
-		mux:        http.NewServeMux(),
+		sessions:     NewSessionManager(logger, dataDir, defaultSessionDays),
+		vapidKeys:    vapidKeys,
+		pushStore:    pushStore,
+		passkeyStore: passkeyStore,
+		pushAlways:   true,
+		logger:       logger,
+		mux:          http.NewServeMux(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -119,7 +115,6 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		n := s.sessions.RestoreSessions(s.sessionStore, logger)
 		if n > 0 {
 			logger.Info("Restored encrypted sessions", "count", n)
-			// Wire push callbacks and load push subscriptions for restored accounts
 			s.wireRestoredAccounts()
 		}
 	}
@@ -128,8 +123,7 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 	return s
 }
 
-// wirePushCallback sets the correct push callback on an account's SSE broker
-// based on the pushAlways setting.
+// wirePushCallback sets the correct push callback on an account's SSE broker.
 func (s *Server) wirePushCallback(acct *UserAccount) {
 	pushFn := func(event SSEEvent) { s.sendWebPush(acct, event) }
 	if s.pushAlways {
@@ -140,15 +134,13 @@ func (s *Server) wirePushCallback(acct *UserAccount) {
 }
 
 // wireRestoredAccounts sets up push callbacks and loads push subscriptions
-// for accounts restored from encrypted storage. This mirrors what
-// handleConfirmOTP does for fresh logins.
+// for accounts restored from encrypted storage.
 func (s *Server) wireRestoredAccounts() {
 	s.sessions.mu.RLock()
 	defer s.sessions.mu.RUnlock()
 
 	for _, acct := range s.sessions.accounts {
 		phone := acct.Phone
-		// Load persisted push subscriptions
 		if s.pushStore != nil {
 			acct.pushMu.Lock()
 			if acct.PushSubscriptions == nil {
@@ -156,10 +148,7 @@ func (s *Server) wireRestoredAccounts() {
 			}
 			acct.pushMu.Unlock()
 		}
-		// Wire push callback
 		s.wirePushCallback(acct)
-		// Start FCM immediately so push works even before any browser connects.
-		// SignalR is NOT started here — it's only useful with active SSE tabs.
 		s.sessions.EnsureFCM(acct)
 		s.logger.Info("Wired push + started FCM for restored account", "phone", phone)
 	}
@@ -180,8 +169,7 @@ func (s *Server) registerRoutes() {
 	// Auth endpoints (no session required)
 	s.mux.HandleFunc("POST /api/auth/request-otp", s.handleRequestOTP)
 	s.mux.HandleFunc("POST /api/auth/confirm-otp", s.handleConfirmOTP)
-	s.mux.HandleFunc("POST /api/auth/pin-login", s.handlePINLogin)
-	s.mux.HandleFunc("POST /api/auth/set-pin", s.requireSession(s.handleSetPIN))
+	s.mux.HandleFunc("POST /api/auth/request-reauth-otp", s.handleRequestReauthOTP)
 	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	s.mux.HandleFunc("POST /api/auth/logout", s.requireSession(s.handleLogout))
 
@@ -199,7 +187,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/chat/new", s.requireSession(s.handleNewChat))
 
 	// Passkey (WebAuthn) endpoints
-	if s.webAuthn != nil {
+	if s.webAuthn != nil && s.passkeyStore != nil {
 		s.mux.HandleFunc("POST /api/passkey/register/begin", s.requireSession(s.handlePasskeyRegisterBegin))
 		s.mux.HandleFunc("POST /api/passkey/register/finish", s.requireSession(s.handlePasskeyRegisterFinish))
 		s.mux.HandleFunc("POST /api/passkey/login/begin", s.handlePasskeyLoginBegin)

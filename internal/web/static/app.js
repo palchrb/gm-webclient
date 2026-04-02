@@ -81,7 +81,25 @@ function setupClipboardPaste() {
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
-async function requestOTP() {
+
+function hideAllLoginSteps() {
+    for (const id of ['phone-step', 'otp-step', 'reauth-step', 'passkey-setup-step']) {
+        document.getElementById(id).classList.add('hidden');
+    }
+}
+
+function enterChat(resp) {
+    state.loggedIn = true;
+    state.phone = resp.phone;
+    state.userId = (resp.userId || '').toLowerCase();
+    showChatView();
+    loadConversations();
+    connectSSE();
+    setupPushNotifications();
+    setupClipboardPaste();
+}
+
+async function startLogin() {
     const phone = document.getElementById('phone-input').value.trim();
     if (!phone) return;
 
@@ -90,21 +108,14 @@ async function requestOTP() {
 
     try {
         const resp = await api('/api/auth/request-otp', { method: 'POST', body: { phone } });
-        document.getElementById('phone-step').classList.add('hidden');
+        hideAllLoginSteps();
 
         if (resp.needPasskey) {
-            // Account active with passkey — start WebAuthn login
             await passkeyLogin(phone);
-        } else if (resp.needPin) {
-            // Account active with PIN — show PIN login
-            document.getElementById('pin-step').classList.remove('hidden');
-            document.getElementById('pin-phone').textContent = phone;
-            document.getElementById('pin-input').focus();
         } else {
-            // Normal OTP flow
+            // Normal OTP flow (first login or no passkey)
             document.getElementById('otp-step').classList.remove('hidden');
             document.getElementById('otp-phone').textContent = phone;
-            document.getElementById('otp-pin-input').classList.remove('hidden');
             document.getElementById('otp-input').focus();
         }
     } catch (e) {
@@ -119,51 +130,23 @@ async function confirmOTP() {
     const code = document.getElementById('otp-input').value.trim();
     if (!phone || !code) return;
 
-    const pin = document.getElementById('otp-pin-input').value.trim();
     setLoading(true);
     hideError();
 
     try {
-        const body = { phone, code };
-        if (pin) body.pin = pin;
-        const resp = await api('/api/auth/confirm-otp', { method: 'POST', body });
-        state.loggedIn = true;
-        state.phone = resp.phone;
-        state.userId = resp.userId;
-        showChatView();
-        loadConversations();
-        connectSSE();
-        setupPushNotifications();
-        setupClipboardPaste();
-        // Offer passkey registration after successful OTP login
-        offerPasskeyRegistration();
+        const resp = await api('/api/auth/confirm-otp', { method: 'POST', body: { phone, code } });
+
+        if (resp.needPasskeySetup && window.PublicKeyCredential) {
+            // Must register passkey before entering chat
+            hideAllLoginSteps();
+            document.getElementById('passkey-setup-step').classList.remove('hidden');
+            // Store login state temporarily so we can enter chat after passkey
+            state._pendingLogin = resp;
+        } else {
+            enterChat(resp);
+        }
     } catch (e) {
         showError(e.message || 'Invalid code');
-    } finally {
-        setLoading(false);
-    }
-}
-
-async function pinLogin() {
-    const phone = document.getElementById('phone-input').value.trim();
-    const pin = document.getElementById('pin-input').value.trim();
-    if (!phone || !pin) return;
-
-    setLoading(true);
-    hideError();
-
-    try {
-        const resp = await api('/api/auth/pin-login', { method: 'POST', body: { phone, pin } });
-        state.loggedIn = true;
-        state.phone = resp.phone;
-        state.userId = resp.userId;
-        showChatView();
-        loadConversations();
-        connectSSE();
-        setupPushNotifications();
-        setupClipboardPaste();
-    } catch (e) {
-        showError(e.message || 'Incorrect PIN');
     } finally {
         setLoading(false);
     }
@@ -186,12 +169,62 @@ function base64urlToBuffer(b64) {
     return bytes.buffer;
 }
 
+async function registerPasskey() {
+    setLoading(true);
+    hideError();
+
+    try {
+        const options = await api('/api/passkey/register/begin', { method: 'POST' });
+
+        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+        options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
+        if (options.publicKey.excludeCredentials) {
+            for (const c of options.publicKey.excludeCredentials) {
+                c.id = base64urlToBuffer(c.id);
+            }
+        }
+
+        const credential = await navigator.credentials.create(options);
+
+        const body = JSON.stringify({
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+                attestationObject: bufferToBase64url(credential.response.attestationObject),
+                clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+            },
+        });
+
+        const resp = await fetch('/api/passkey/register/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.error || 'Passkey registration failed');
+        }
+
+        console.log('Passkey registered successfully');
+
+        // Enter chat with the pending login state
+        if (state._pendingLogin) {
+            enterChat(state._pendingLogin);
+            delete state._pendingLogin;
+        }
+    } catch (e) {
+        showError(e.message || 'Passkey registration failed. Try again.');
+    } finally {
+        setLoading(false);
+    }
+}
+
 async function passkeyLogin(phone) {
     try {
         setLoading(true);
         const options = await api('/api/passkey/login/begin', { method: 'POST', body: { phone } });
 
-        // Decode challenge and credential IDs
         options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
         if (options.publicKey.allowCredentials) {
             for (const c of options.publicKey.allowCredentials) {
@@ -201,7 +234,6 @@ async function passkeyLogin(phone) {
 
         const assertion = await navigator.credentials.get(options);
 
-        // Encode response for server
         const body = JSON.stringify({
             id: assertion.id,
             rawId: bufferToBase64url(assertion.rawId),
@@ -223,65 +255,60 @@ async function passkeyLogin(phone) {
             const err = await resp.json().catch(() => ({}));
             throw new Error(err.error || 'Passkey login failed');
         }
+
         const data = await resp.json();
-        state.loggedIn = true;
-        state.phone = data.phone;
-        state.userId = data.userId;
-        showChatView();
-        loadConversations();
-        connectSSE();
-        setupPushNotifications();
-        setupClipboardPaste();
+
+        if (data.needReauth) {
+            // Passkey verified but Garmin tokens expired — need OTP to reconnect
+            hideAllLoginSteps();
+            document.getElementById('reauth-step').classList.remove('hidden');
+            document.getElementById('reauth-phone').textContent = phone;
+            return;
+        }
+
+        enterChat(data);
     } catch (e) {
         if (e.name === 'NotAllowedError') {
-            // User cancelled — show phone step again
+            // User cancelled passkey prompt
+            hideAllLoginSteps();
             document.getElementById('phone-step').classList.remove('hidden');
             return;
         }
-        showError(e.message || 'Passkey login failed');
+        // Passkey failed — offer OTP fallback
+        showError('Passkey failed. Use OTP to sign in.');
+        hideAllLoginSteps();
         document.getElementById('phone-step').classList.remove('hidden');
+        // Auto-trigger OTP for convenience
+        try {
+            const otpResp = await api('/api/auth/request-otp', { method: 'POST', body: { phone, forceOTP: true } });
+            hideAllLoginSteps();
+            document.getElementById('otp-step').classList.remove('hidden');
+            document.getElementById('otp-phone').textContent = phone;
+            document.getElementById('otp-input').focus();
+            hideError();
+        } catch (e2) { /* show phone step */ }
     } finally {
         setLoading(false);
     }
 }
 
-async function offerPasskeyRegistration() {
-    // Only offer if WebAuthn is available and the endpoint exists
-    if (!window.PublicKeyCredential) return;
+async function requestReauthOTP() {
+    const phone = document.getElementById('phone-input').value.trim();
+    if (!phone) return;
+
+    setLoading(true);
+    hideError();
+
     try {
-        const options = await api('/api/passkey/register/begin', { method: 'POST' });
-
-        // Decode server values
-        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
-        options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
-        if (options.publicKey.excludeCredentials) {
-            for (const c of options.publicKey.excludeCredentials) {
-                c.id = base64urlToBuffer(c.id);
-            }
-        }
-
-        const credential = await navigator.credentials.create(options);
-
-        // Encode for server
-        const body = JSON.stringify({
-            id: credential.id,
-            rawId: bufferToBase64url(credential.rawId),
-            type: credential.type,
-            response: {
-                attestationObject: bufferToBase64url(credential.response.attestationObject),
-                clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
-            },
-        });
-
-        await fetch('/api/passkey/register/finish', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-        });
-        console.log('Passkey registered successfully');
+        await api('/api/auth/request-reauth-otp', { method: 'POST', body: { phone } });
+        hideAllLoginSteps();
+        document.getElementById('otp-step').classList.remove('hidden');
+        document.getElementById('otp-phone').textContent = phone;
+        document.getElementById('otp-input').focus();
     } catch (e) {
-        // User declined or WebAuthn not supported — that's fine
-        console.log('Passkey registration skipped:', e.message || e);
+        showError(e.message || 'Could not send code');
+    } finally {
+        setLoading(false);
     }
 }
 

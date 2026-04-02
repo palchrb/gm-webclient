@@ -12,13 +12,12 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"github.com/yourusername/matrix-garmin-messenger/internal/hermes/fcm"
 )
 
 const (
-	sessionCookieName = "garmin_session"
+	sessionCookieName  = "garmin_session"
 	signalRIdleTimeout = 2 * time.Minute // pause SignalR when no browser is listening
 	reaperInterval     = 30 * time.Second
 	defaultSessionDays = 30
@@ -32,26 +31,21 @@ type contextKey string
 const sessionContextKey contextKey = "session"
 
 // ---------------------------------------------------------------------------
-// UserAccount — one per phone number, shared across all browser sessions
+// UserAccount — one per phone number, max one active at a time
 // ---------------------------------------------------------------------------
 
-// UserAccount holds Garmin connectivity shared across all browser sessions
-// for the same phone number. One SignalR + one FCM connection per account.
+// UserAccount holds Garmin connectivity. Only one account per phone number,
+// and only one browser session per account (hard pruning).
 type UserAccount struct {
 	Phone   string
 	Auth    *gm.HermesAuth
 	API     *gm.HermesAPI
 	SignalR *gm.HermesSignalR
 	FCM     *fcm.Client
-	SSE     *SSEBroker // shared: all sessions for this phone receive events
+	SSE     *SSEBroker
 
 	PushSubscriptions map[string]*webpush.Subscription
 	pushMu            sync.RWMutex
-
-	WebAuthnCreds []webauthn.Credential // passkey credentials
-	credMu        sync.RWMutex
-
-	PINHash []byte // bcrypt hash, empty if no PIN set yet
 
 	mu             sync.Mutex
 	signalRCancel  context.CancelFunc
@@ -61,10 +55,10 @@ type UserAccount struct {
 }
 
 // ---------------------------------------------------------------------------
-// UserSession — one per browser cookie, lightweight
+// UserSession — exactly one per phone (hard pruning)
 // ---------------------------------------------------------------------------
 
-// UserSession is a browser login. Multiple sessions can share one UserAccount.
+// UserSession is a browser login. Only one session per phone at a time.
 type UserSession struct {
 	ID           string
 	Account      *UserAccount
@@ -80,16 +74,17 @@ func (s *UserSession) Touch() {
 }
 
 // Convenience accessors so the rest of the codebase doesn't change much.
-func (s *UserSession) Phone() string            { return s.Account.Phone }
-func (s *UserSession) AuthObj() *gm.HermesAuth  { return s.Account.Auth }
-func (s *UserSession) APIObj() *gm.HermesAPI    { return s.Account.API }
-func (s *UserSession) SSEBroker() *SSEBroker    { return s.Account.SSE }
+func (s *UserSession) Phone() string           { return s.Account.Phone }
+func (s *UserSession) AuthObj() *gm.HermesAuth { return s.Account.Auth }
+func (s *UserSession) APIObj() *gm.HermesAPI   { return s.Account.API }
+func (s *UserSession) SSEBroker() *SSEBroker   { return s.Account.SSE }
 
 // PendingOTP represents a pending OTP request before a session is created.
 type PendingOTP struct {
 	OtpReq    *gm.OtpRequest
 	Auth      *gm.HermesAuth
 	CreatedAt time.Time
+	IsReauth  bool // true when OTP is for reconnecting (passkey already verified)
 }
 
 // ---------------------------------------------------------------------------
@@ -98,13 +93,14 @@ type PendingOTP struct {
 
 // SessionManager manages accounts (per phone) and sessions (per browser).
 type SessionManager struct {
-	accounts    map[string]*UserAccount  // keyed by phone number
-	sessions    map[string]*UserSession  // keyed by session ID (cookie)
-	pendingOTP  map[string]*PendingOTP   // keyed by phone number
-	fcmDataDir  string
-	sessionDays int
-	mu          sync.RWMutex
-	logger      *slog.Logger
+	accounts       map[string]*UserAccount // keyed by phone number
+	sessions       map[string]*UserSession // keyed by session ID (cookie)
+	pendingOTP     map[string]*PendingOTP  // keyed by phone number
+	pendingReauth  map[string]time.Time    // phone → when passkey was verified (awaiting OTP reauth)
+	fcmDataDir     string
+	sessionDays    int
+	mu             sync.RWMutex
+	logger         *slog.Logger
 }
 
 func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
@@ -112,12 +108,13 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 		sessionDays = defaultSessionDays
 	}
 	sm := &SessionManager{
-		accounts:    make(map[string]*UserAccount),
-		sessions:    make(map[string]*UserSession),
-		pendingOTP:  make(map[string]*PendingOTP),
-		fcmDataDir:  fcmDataDir,
-		sessionDays: sessionDays,
-		logger:      logger,
+		accounts:      make(map[string]*UserAccount),
+		sessions:      make(map[string]*UserSession),
+		pendingOTP:    make(map[string]*PendingOTP),
+		pendingReauth: make(map[string]time.Time),
+		fcmDataDir:    fcmDataDir,
+		sessionDays:   sessionDays,
+		logger:        logger,
 	}
 	go sm.reaper()
 	return sm
@@ -125,19 +122,16 @@ func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) 
 
 // getOrCreateAccount returns the existing account for a phone, or creates one.
 // A fresh OTP login ALWAYS replaces the existing account's credentials and
-// restarts connections. This ensures we never get stuck on stale tokens
-// (e.g. after external device deletion via iOS app).
+// restarts connections.
 func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
 	if acct, ok := sm.accounts[phone]; ok {
-		// If auth is the same object (e.g. additional session for same account
-		// during restore), just reuse — no need to restart connections.
+		// If auth is the same object (e.g. during restore), just reuse.
 		if acct.Auth == auth {
 			return acct
 		}
 
 		// Fresh OTP login — update credentials and restart connections.
-		sm.logger.Info("Updating account with fresh credentials from new login", "phone", phone,
-			"oldInstance", acct.Auth.InstanceID, "newInstance", auth.InstanceID)
+		sm.logger.Info("Updating account with fresh credentials", "phone", phone)
 
 		// Stop old connections before swapping
 		acct.SignalR.Stop()
@@ -215,8 +209,6 @@ func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logg
 	})
 
 	if acct.FCM != nil {
-		// Deduplicate FCM messages — Garmin sends the same message via
-		// multiple FCM channels, producing 5+ duplicates per message.
 		lastFCMMessageID := ""
 		acct.FCM.OnMessage(func(msg fcm.NewMessage) {
 			msgID := msg.MessageID.String()
@@ -244,7 +236,8 @@ func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logg
 	}
 }
 
-// CreateSession creates a new browser session, reusing or creating an account.
+// CreateSession creates a new browser session for the given phone.
+// Multiple sessions can share one Garmin account (one SignalR + FCM per phone).
 func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logger *slog.Logger) (*UserSession, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -379,7 +372,7 @@ func (sm *SessionManager) GetFromRequest(r *http.Request) *UserSession {
 }
 
 // RemoveSession removes a browser session. If it's the last session for the
-// account, the account's SignalR and FCM are stopped too.
+// account, the Garmin account is stopped and deregistered.
 func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionID]
@@ -405,7 +398,7 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	}
 	sm.mu.Unlock()
 
-	sm.logger.Info("Session removed", "phone", phone, "accountRemoved", !accountInUse)
+	sm.logger.Info("Session removed", "phone", phone, "accountStopped", !accountInUse)
 }
 
 // stopAccount shuts down all connections for an account and deregisters with Garmin.
@@ -419,7 +412,6 @@ func (sm *SessionManager) stopAccount(acct *UserAccount) {
 	}
 
 	// Deregister with Garmin so the app instance doesn't pile up
-	// in the user's device list on the iOS/Android Garmin Messenger app.
 	if acct.Auth.InstanceID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -434,12 +426,13 @@ func (sm *SessionManager) stopAccount(acct *UserAccount) {
 }
 
 // StorePendingOTP stores a pending OTP request.
-func (sm *SessionManager) StorePendingOTP(phone string, otpReq *gm.OtpRequest, auth *gm.HermesAuth) {
+func (sm *SessionManager) StorePendingOTP(phone string, otpReq *gm.OtpRequest, auth *gm.HermesAuth, isReauth bool) {
 	sm.mu.Lock()
 	sm.pendingOTP[phone] = &PendingOTP{
 		OtpReq:    otpReq,
 		Auth:      auth,
 		CreatedAt: time.Now(),
+		IsReauth:  isReauth,
 	}
 	sm.mu.Unlock()
 }
@@ -453,6 +446,27 @@ func (sm *SessionManager) GetPendingOTP(phone string) *PendingOTP {
 		delete(sm.pendingOTP, phone)
 	}
 	return pending
+}
+
+// MarkPasskeyVerified records that a passkey login was verified for a phone
+// but the account needs reauth (tokens expired).
+func (sm *SessionManager) MarkPasskeyVerified(phone string) {
+	sm.mu.Lock()
+	sm.pendingReauth[phone] = time.Now()
+	sm.mu.Unlock()
+}
+
+// PopPasskeyVerified returns true if passkey was recently verified for this phone.
+func (sm *SessionManager) PopPasskeyVerified(phone string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	t, ok := sm.pendingReauth[phone]
+	if !ok {
+		return false
+	}
+	delete(sm.pendingReauth, phone)
+	// Valid for 10 minutes
+	return time.Since(t) < 10*time.Minute
 }
 
 // SetSessionCookie sets the session cookie on the response.
@@ -526,16 +540,14 @@ func (sm *SessionManager) reaper() {
 			}
 
 			if !hasSession {
-				// No sessions left — stop everything
 				sm.stopAccount(acct)
 				delete(sm.accounts, phone)
 				continue
 			}
 
-			// If no SSE subscribers (all browser tabs closed), pause SignalR
-			// but keep FCM for Web Push
+			// If no SSE subscribers, pause SignalR but keep FCM for push
 			if acct.SSE.SubscriberCount() == 0 && acct.signalRStarted {
-				sm.logger.Info("Pausing SignalR (no browser tabs, FCM stays for push)", "phone", phone, "sseSubscribers", 0)
+				sm.logger.Info("Pausing SignalR (no browser tabs)", "phone", phone)
 				acct.SignalR.Stop()
 				if acct.signalRCancel != nil {
 					acct.signalRCancel()
@@ -546,10 +558,15 @@ func (sm *SessionManager) reaper() {
 			}
 		}
 
-		// Clean up old pending OTPs
+		// Clean up old pending OTPs and reauth tokens
 		for phone, pending := range sm.pendingOTP {
 			if now.Sub(pending.CreatedAt) > 5*time.Minute {
 				delete(sm.pendingOTP, phone)
+			}
+		}
+		for phone, t := range sm.pendingReauth {
+			if now.Sub(t) > 10*time.Minute {
+				delete(sm.pendingReauth, phone)
 			}
 		}
 		sm.mu.Unlock()
