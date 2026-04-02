@@ -236,8 +236,8 @@ func (sm *SessionManager) wireAccountEvents(acct *UserAccount, logger *slog.Logg
 	}
 }
 
-// CreateSession creates a new browser session.
-// Hard prunes: removes any existing session for the same phone first.
+// CreateSession creates a new browser session for the given phone.
+// Multiple sessions can share one Garmin account (one SignalR + FCM per phone).
 func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logger *slog.Logger) (*UserSession, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -246,15 +246,6 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	sessionID := hex.EncodeToString(tokenBytes)
 
 	sm.mu.Lock()
-
-	// Hard prune: remove all existing sessions for this phone
-	for id, s := range sm.sessions {
-		if s.Account.Phone == phone {
-			sm.logger.Info("Pruning old session for phone", "phone", phone, "oldSessionId", id[:8]+"...")
-			delete(sm.sessions, id)
-		}
-	}
-
 	acct := sm.getOrCreateAccount(phone, auth, logger)
 	session := &UserSession{
 		ID:           sessionID,
@@ -264,7 +255,7 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 	sm.sessions[sessionID] = session
 	sm.mu.Unlock()
 
-	sm.logger.Info("Session created (1 per phone)", "phone", phone, "sessionId", sessionID[:8]+"...")
+	sm.logger.Info("Session created", "phone", phone, "sessionId", sessionID[:8]+"...")
 	return session, nil
 }
 
@@ -380,8 +371,8 @@ func (sm *SessionManager) GetFromRequest(r *http.Request) *UserSession {
 	return sm.GetSession(cookie.Value)
 }
 
-// RemoveSession removes a browser session and stops the account
-// (since we enforce 1 session per phone, this always stops the account).
+// RemoveSession removes a browser session. If it's the last session for the
+// account, the Garmin account is stopped and deregistered.
 func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionID]
@@ -392,12 +383,22 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	delete(sm.sessions, sessionID)
 	phone := session.Account.Phone
 
-	// With 1-session-per-phone, always clean up account
-	sm.stopAccount(session.Account)
-	delete(sm.accounts, phone)
+	// Check if any other sessions still reference this account
+	accountInUse := false
+	for _, s := range sm.sessions {
+		if s.Account.Phone == phone {
+			accountInUse = true
+			break
+		}
+	}
+
+	if !accountInUse {
+		sm.stopAccount(session.Account)
+		delete(sm.accounts, phone)
+	}
 	sm.mu.Unlock()
 
-	sm.logger.Info("Session + account removed", "phone", phone)
+	sm.logger.Info("Session removed", "phone", phone, "accountStopped", !accountInUse)
 }
 
 // stopAccount shuts down all connections for an account and deregisters with Garmin.
