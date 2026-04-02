@@ -642,12 +642,19 @@ function addOptimisticMessage(convId, messageId, body, sendState) {
 }
 
 // Replace a temporary optimistic message with the real server ID.
+// Updates DOM in-place to avoid full re-render scroll jump.
 function replaceOptimisticMessage(convId, tempId, realId, sendState) {
     const msg = state.messages.find(m => m.messageId === tempId);
     if (msg) {
         msg.messageId = realId;
         msg._sendState = sendState || 'sent';
-        renderMessages();
+        // Update the DOM element in-place instead of full re-render
+        const el = document.querySelector(`[data-msgid="${tempId}"]`);
+        if (el) {
+            el.dataset.msgid = realId;
+            const statusEl = el.querySelector('.message-status');
+            if (statusEl) statusEl.innerHTML = '&#10003;'; // ✓
+        }
     }
 }
 
@@ -1102,12 +1109,11 @@ function handleIncomingMessage(msg) {
 
     // If viewing this conversation, append message
     if (state.currentConversationId === convId) {
-        // Avoid duplicates
+        // Avoid duplicates (including optimistic messages already shown)
         if (!state.messages.find(m => m.messageId === msg.messageId)) {
             state.messages.push(msg);
-            // Update message cache with live data
             cache.set('msgs_' + convId, state.messages);
-            renderMessages();
+            renderMessagesPreserveScroll();
             scrollToBottom();
             markAsRead(convId, msg.messageId);
         }
@@ -1313,6 +1319,19 @@ function renderMessages() {
 
     // Load media asynchronously after rendering
     loadMediaForMessages();
+}
+
+// Re-render messages while preserving scroll position (for live updates)
+function renderMessagesPreserveScroll() {
+    const container = document.getElementById('messages');
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    const scrollPos = container.scrollTop;
+    renderMessages();
+    if (wasAtBottom) {
+        scrollToBottom(true);
+    } else {
+        container.scrollTop = scrollPos;
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
