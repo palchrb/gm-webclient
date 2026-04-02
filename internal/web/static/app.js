@@ -656,7 +656,7 @@ function markOptimisticFailed(tempId, errorMsg) {
     if (msg) {
         msg._sendState = 'failed';
         msg._errorMsg = errorMsg;
-        renderMessages();
+        updateMessageFailed(tempId);
     }
 }
 
@@ -1099,14 +1099,34 @@ function handleIncomingMessage(msg) {
     cache.set('conversations', state.conversations);
     renderConversations();
 
-    // If viewing this conversation, append message
+    // If viewing this conversation, handle the message
     if (state.currentConversationId === convId) {
         // Avoid duplicates (including optimistic messages already shown)
         if (!state.messages.find(m => m.messageId === msg.messageId)) {
             state.messages.push(msg);
             cache.set('msgs_' + convId, state.messages);
-            appendMessageToDOM(msg);
-            scrollToBottom();
+
+            if (isReactionMessage(msg)) {
+                // Reaction messages aren't shown in timeline — update target's badges
+                const r = extractReaction(msg);
+                if (r) {
+                    const target = state.messages.find(m =>
+                        !isReactionMessage(m) &&
+                        (m.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim() === r.targetText
+                    );
+                    if (target) {
+                        // Clear matching optimistic reaction (server confirmed it)
+                        if (target._reactions) {
+                            const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
+                            if (idx >= 0) target._reactions.splice(idx, 1);
+                        }
+                        updateMessageReactions(target.messageId);
+                    }
+                }
+            } else {
+                appendMessageToDOM(msg);
+                scrollToBottom();
+            }
             markAsRead(convId, msg.messageId);
         }
     }
@@ -1124,9 +1144,7 @@ function handleStatusUpdate(update) {
         } else {
             msg.status.push({ userId: update.userId || '', messageStatus: update.messageStatus });
         }
-        // Don't do a full re-render for status updates — it destroys
-        // waveform players being initialized. Just update status icons.
-        // A full renderMessages() will pick it up on next navigation.
+        updateMessageStatus(msgId); // surgical DOM update — no re-render
     }
 }
 
@@ -1672,6 +1690,73 @@ function getStatusClass(msg) {
     return '';
 }
 
+// ─── Surgical DOM Updates (no full re-render) ───────────────────────────────
+
+function updateMessageStatus(msgId) {
+    const el = document.querySelector(`[data-msgid="${msgId}"]`);
+    if (!el) return;
+    const msg = state.messages.find(m => m.messageId === msgId);
+    if (!msg || !isMine(msg)) return;
+    const statusEl = el.querySelector('.message-status');
+    if (!statusEl) return;
+    statusEl.textContent = getStatusIcon(msg);
+    statusEl.className = 'message-status ' + getStatusClass(msg);
+}
+
+function collectReactionsForMessage(targetMsg) {
+    const results = [];
+    const targetBody = (targetMsg.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
+    if (!targetBody) return results;
+    const targetTime = new Date(targetMsg.sentAt || targetMsg.receivedAt || 0).getTime();
+    for (const msg of state.messages) {
+        if (!isReactionMessage(msg)) continue;
+        const r = extractReaction(msg);
+        if (!r || r.targetText !== targetBody) continue;
+        results.push({ emoji: r.emoji, from: msg.from, isMine: isMine(msg) });
+    }
+    return results;
+}
+
+function updateMessageReactions(msgId) {
+    const el = document.querySelector(`[data-msgid="${msgId}"]`);
+    if (!el) return;
+    const msg = state.messages.find(m => m.messageId === msgId);
+    if (!msg) return;
+
+    const combined = [...collectReactionsForMessage(msg), ...(msg._reactions || [])];
+    let badgesHtml = '';
+    if (combined.length > 0) {
+        const counts = {};
+        for (const r of combined) counts[r.emoji] = (counts[r.emoji] || 0) + 1;
+        const badges = Object.entries(counts).map(([emoji, count]) =>
+            `<span class="reaction-badge">${emoji}${count > 1 ? ' ' + count : ''}</span>`
+        ).join('');
+        badgesHtml = `<div class="reaction-badges">${badges}</div>`;
+    }
+
+    const existing = el.querySelector('.reaction-badges');
+    if (existing) {
+        if (badgesHtml) { existing.outerHTML = badgesHtml; } else { existing.remove(); }
+    } else if (badgesHtml) {
+        const meta = el.querySelector('.message-meta');
+        if (meta) meta.insertAdjacentHTML('beforebegin', badgesHtml);
+    }
+}
+
+function updateMessageFailed(msgId) {
+    const el = document.querySelector(`[data-msgid="${msgId}"]`);
+    if (!el) return;
+    const msg = state.messages.find(m => m.messageId === msgId);
+    if (!msg) return;
+    el.classList.add('message-failed');
+    el.classList.remove('message-sending');
+    const statusEl = el.querySelector('.message-status');
+    if (statusEl) { statusEl.textContent = '!'; statusEl.className = 'message-status failed'; }
+    if (msg._errorMsg && !el.querySelector('.message-error')) {
+        el.insertAdjacentHTML('beforeend', `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>`);
+    }
+}
+
 function formatTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -1886,10 +1971,10 @@ async function sendReaction(messageId, emoji) {
 
     const targetBody = msg.messageBody || '';
 
-    // Optimistic: show reaction badge immediately
+    // Optimistic: show reaction badge immediately (surgical DOM update)
     if (!msg._reactions) msg._reactions = [];
     msg._reactions.push({ emoji, isMine: true });
-    renderMessages();
+    updateMessageReactions(messageId);
 
     try {
         await api('/api/messages/react', {
@@ -1901,14 +1986,13 @@ async function sendReaction(messageId, emoji) {
                 targetBody,
             }
         });
-        reloadCurrentConversation(2000);
+        // No reloadCurrentConversation — SSE will deliver the reaction message
     } catch (e) {
         console.error('Failed to send reaction:', e);
-        // Remove optimistic reaction on failure
         if (msg._reactions) {
             const idx = msg._reactions.findIndex(r => r.emoji === emoji && r.isMine);
             if (idx >= 0) msg._reactions.splice(idx, 1);
-            renderMessages();
+            updateMessageReactions(messageId);
         }
     }
 }
