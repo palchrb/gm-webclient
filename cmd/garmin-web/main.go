@@ -20,6 +20,7 @@ func main() {
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	phoneWhitelist := flag.String("phone-whitelist", "", "Comma-separated list of phone numbers allowed to log in (e.g. \"+4712345678,+4787654321\"). Empty allows all.")
 	sessionDays := flag.Int("session-days", 7, "Number of days a login session/cookie is valid")
+	origin := flag.String("origin", "", "Origin URL for passkey/WebAuthn support (e.g. \"https://garmin.tailnet.ts.net\")")
 	flag.Parse()
 
 	// Log level: flag takes precedence, then env var, then default "info"
@@ -82,6 +83,23 @@ func main() {
 		opts = append(opts, web.WithSessionDays(days))
 		log.Printf("Session TTL: %d days", days)
 	}
+
+	// Passkey (WebAuthn) support from flag or env var
+	originStr := *origin
+	if originStr == "" {
+		originStr = os.Getenv("ORIGIN")
+	}
+	if originStr != "" {
+		opts = append(opts, web.WithOrigin(originStr))
+	}
+
+	// Push always: send web push even when browser tabs are open (default true)
+	pushAlways := true
+	if envPush := os.Getenv("PUSH_ALWAYS"); envPush != "" {
+		pushAlways = envPush == "true" || envPush == "1"
+	}
+	opts = append(opts, web.WithPushAlways(pushAlways))
+	log.Printf("Web Push always-on: %v", pushAlways)
 
 	// Encrypted session persistence.
 	// If SESSION_KEY is set, use it. Otherwise auto-generate and persist one

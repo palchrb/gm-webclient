@@ -16,7 +16,8 @@ type SSEEvent struct {
 // SSEBroker manages SSE subscribers for a single user account.
 type SSEBroker struct {
 	subscribers     map[chan SSEEvent]struct{}
-	onNoSubscribers func(SSEEvent)
+	onNoSubscribers func(SSEEvent) // called when publishing with no active tabs
+	onEveryPublish  func(SSEEvent) // called on every publish (for always-push mode)
 	mu              sync.RWMutex
 }
 
@@ -28,6 +29,10 @@ func NewSSEBroker() *SSEBroker {
 
 func (b *SSEBroker) OnNoSubscribers(fn func(SSEEvent)) {
 	b.onNoSubscribers = fn
+}
+
+func (b *SSEBroker) OnEveryPublish(fn func(SSEEvent)) {
+	b.onEveryPublish = fn
 }
 
 func (b *SSEBroker) Subscribe() chan SSEEvent {
@@ -51,8 +56,14 @@ func (b *SSEBroker) Publish(event SSEEvent) {
 	count := len(b.subscribers)
 	b.mu.RUnlock()
 
+	// Always-push mode: fire on every message regardless of active tabs
+	if b.onEveryPublish != nil {
+		b.onEveryPublish(event)
+	}
+
 	if count == 0 {
-		if b.onNoSubscribers != nil {
+		// Only fire onNoSubscribers if onEveryPublish is NOT set (avoid double push)
+		if b.onEveryPublish == nil && b.onNoSubscribers != nil {
 			b.onNoSubscribers(event)
 		}
 		return

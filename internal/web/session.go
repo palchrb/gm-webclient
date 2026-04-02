@@ -12,6 +12,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"github.com/yourusername/matrix-garmin-messenger/internal/hermes/fcm"
 )
@@ -46,6 +47,11 @@ type UserAccount struct {
 
 	PushSubscriptions map[string]*webpush.Subscription
 	pushMu            sync.RWMutex
+
+	WebAuthnCreds []webauthn.Credential // passkey credentials
+	credMu        sync.RWMutex
+
+	PINHash []byte // bcrypt hash, empty if no PIN set yet
 
 	mu             sync.Mutex
 	signalRCancel  context.CancelFunc
@@ -347,6 +353,13 @@ func (sm *SessionManager) EnsureFCM(acct *UserAccount) {
 			}
 		}
 	}()
+}
+
+// GetAccount returns the active account for a phone, or nil.
+func (sm *SessionManager) GetAccount(phone string) *UserAccount {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.accounts[phone]
 }
 
 // GetSession returns a session by ID.
