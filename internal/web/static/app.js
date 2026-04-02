@@ -447,7 +447,16 @@ async function loadMoreConversations() {
 }
 
 async function loadMembers(convId) {
-    if (state.members[convId]) return;
+    if (state.members[convId]) {
+        // Members cached — but ensure memberNames are populated (cache may be stale)
+        for (const m of state.members[convId]) {
+            const name = m.friendlyName || m.address || '';
+            if (!name) continue;
+            if (m.userIdentifier) state.memberNames[m.userIdentifier.toLowerCase()] = name;
+            if (m.address) state.memberNames[m.address] = name;
+        }
+        return;
+    }
     try {
         const members = await api(`/api/conversations/${convId}/members`);
         state.members[convId] = members;
@@ -1030,14 +1039,17 @@ function connectSSE() {
 
 // Track unread messages per conversation
 const unreadCounts = {};
+let lastHandledMessageId = '';
 
 function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
 
+    // Deduplicate: same message can arrive via both SignalR and FCM
+    if (msg.messageId && msg.messageId === lastHandledMessageId) return;
+    if (msg.messageId) lastHandledMessageId = msg.messageId;
+
     // Track unread for conversations we're not currently viewing (skip own messages)
-    const mine = isMine(msg);
-    console.log('handleIncomingMessage', { convId, currentConv: state.currentConversationId, from: msg.from, mine, userId: state.userId, phone: state.phone });
-    if (state.currentConversationId !== convId && !mine) {
+    if (state.currentConversationId !== convId && !isMine(msg)) {
         unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
     }
 
@@ -1317,10 +1329,23 @@ function isMine(msg) {
 function getSenderName(msg) {
     const from = msg.from;
     if (!from) return null;
-    // Try exact match, then lowercase (UUIDs from API may differ in case)
-    return state.memberNames[from]
-        || state.memberNames[from.toLowerCase()]
-        || from;
+    const fromLower = from.toLowerCase();
+    // Try cached name lookup first
+    if (state.memberNames[from]) return state.memberNames[from];
+    if (state.memberNames[fromLower]) return state.memberNames[fromLower];
+    // Fallback: search loaded members for this conversation
+    const convMembers = state.members[msg.conversationId];
+    if (convMembers) {
+        for (const m of convMembers) {
+            if (m.userIdentifier && m.userIdentifier.toLowerCase() === fromLower) {
+                const name = m.friendlyName || m.address || from;
+                state.memberNames[fromLower] = name;
+                return name;
+            }
+        }
+    }
+    // Last resort: show phone-like address if available from members, not raw UUID
+    return from;
 }
 
 function getMessageBody(msg) {
