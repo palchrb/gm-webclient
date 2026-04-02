@@ -349,6 +349,21 @@ func (sm *SessionManager) EnsureFCM(acct *UserAccount) {
 	}()
 }
 
+// HasActiveAccount returns true if there is an active account for the given phone.
+func (sm *SessionManager) HasActiveAccount(phone string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	_, ok := sm.accounts[phone]
+	return ok
+}
+
+// GetAccount returns the active account for a phone, or nil.
+func (sm *SessionManager) GetAccount(phone string) *UserAccount {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.accounts[phone]
+}
+
 // GetSession returns a session by ID.
 func (sm *SessionManager) GetSession(sessionID string) *UserSession {
 	sm.mu.RLock()

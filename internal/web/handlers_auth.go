@@ -16,6 +16,7 @@ type requestOTPResponse struct {
 	Phone             string  `json:"phone"`
 	ValidUntil        *string `json:"validUntil,omitempty"`
 	AttemptsRemaining *int    `json:"attemptsRemaining,omitempty"`
+	AlreadyActive     bool    `json:"alreadyActive,omitempty"`
 }
 
 type confirmOTPRequest struct {
@@ -45,6 +46,17 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
 		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", req.Phone)
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+
+	// If account already exists for this phone, skip OTP entirely.
+	// The browser can call /api/auth/rejoin to get a new session cookie.
+	if s.sessions.HasActiveAccount(req.Phone) {
+		s.logger.Info("Account already active, skipping OTP", "phone", req.Phone)
+		writeJSON(w, http.StatusOK, requestOTPResponse{
+			Phone:         req.Phone,
+			AlreadyActive: true,
+		})
 		return
 	}
 
@@ -125,6 +137,52 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	session.Account.SSE.OnNoSubscribers(func(event SSEEvent) {
 		s.sendWebPush(session.Account, event)
 	})
+
+	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+	s.PersistSessions()
+
+	userID := gm.PhoneToHermesUserID(req.Phone)
+	writeJSON(w, http.StatusOK, authStatusResponse{
+		LoggedIn: true,
+		Phone:    &req.Phone,
+		UserID:   &userID,
+	})
+}
+
+// handleRejoin creates a new browser session for a phone that already has an
+// active account. No OTP required — the account was already authenticated.
+func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Phone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+		return
+	}
+
+	// Check phone whitelist
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+
+	acct := s.sessions.GetAccount(req.Phone)
+	if acct == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no active account for this phone"})
+		return
+	}
+
+	// Create a new session reusing the existing account
+	session, err := s.sessions.CreateSession(req.Phone, acct.Auth, s.logger)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session"})
+		return
+	}
 
 	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
 	s.PersistSessions()

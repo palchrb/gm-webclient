@@ -89,7 +89,20 @@ async function requestOTP() {
     hideError();
 
     try {
-        await api('/api/auth/request-otp', { method: 'POST', body: { phone } });
+        const resp = await api('/api/auth/request-otp', { method: 'POST', body: { phone } });
+        if (resp.alreadyActive) {
+            // Account already authenticated — rejoin without OTP
+            const joinResp = await api('/api/auth/rejoin', { method: 'POST', body: { phone } });
+            state.loggedIn = true;
+            state.phone = joinResp.phone;
+            state.userId = joinResp.userId;
+            showChatView();
+            loadConversations();
+            connectSSE();
+            setupPushNotifications();
+            setupClipboardPaste();
+            return;
+        }
         document.getElementById('phone-step').classList.add('hidden');
         document.getElementById('otp-step').classList.remove('hidden');
         document.getElementById('otp-phone').textContent = phone;
