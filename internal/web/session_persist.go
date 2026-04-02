@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
@@ -24,13 +25,14 @@ type SessionStore struct {
 
 // persistedSession is the plaintext structure written (after encryption) to disk.
 type persistedSession struct {
-	SessionID    string  `json:"sessionId"`
-	Phone        string  `json:"phone"`
-	AccessToken  string  `json:"accessToken"`
-	RefreshToken string  `json:"refreshToken"`
-	InstanceID   string  `json:"instanceId"`
-	ExpiresAt    float64 `json:"expiresAt"`
-	PINHash      []byte  `json:"pinHash,omitempty"`
+	SessionID     string                 `json:"sessionId"`
+	Phone         string                 `json:"phone"`
+	AccessToken   string                 `json:"accessToken"`
+	RefreshToken  string                 `json:"refreshToken"`
+	InstanceID    string                 `json:"instanceId"`
+	ExpiresAt     float64                `json:"expiresAt"`
+	PINHash       []byte                 `json:"pinHash,omitempty"`
+	WebAuthnCreds []webauthn.Credential  `json:"webauthnCreds,omitempty"`
 }
 
 func NewSessionStore(dataDir, sessionKey string, logger *slog.Logger) (*SessionStore, error) {
@@ -54,14 +56,20 @@ func (ss *SessionStore) path() string {
 func (ss *SessionStore) Save(sessions map[string]*UserSession) {
 	entries := make([]persistedSession, 0, len(sessions))
 	for _, s := range sessions {
+		s.Account.credMu.RLock()
+		creds := make([]webauthn.Credential, len(s.Account.WebAuthnCreds))
+		copy(creds, s.Account.WebAuthnCreds)
+		s.Account.credMu.RUnlock()
+
 		entries = append(entries, persistedSession{
-			SessionID:    s.ID,
-			Phone:        s.Account.Phone,
-			AccessToken:  s.Account.Auth.AccessToken,
-			RefreshToken: s.Account.Auth.RefreshToken,
-			InstanceID:   s.Account.Auth.InstanceID,
-			ExpiresAt:    s.Account.Auth.ExpiresAt,
-			PINHash:      s.Account.PINHash,
+			SessionID:     s.ID,
+			Phone:         s.Account.Phone,
+			AccessToken:   s.Account.Auth.AccessToken,
+			RefreshToken:  s.Account.Auth.RefreshToken,
+			InstanceID:    s.Account.Auth.InstanceID,
+			ExpiresAt:     s.Account.Auth.ExpiresAt,
+			PINHash:       s.Account.PINHash,
+			WebAuthnCreds: creds,
 		})
 	}
 
@@ -171,9 +179,12 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 				continue
 			}
 
-			// Restore PIN hash
+			// Restore PIN hash and passkey credentials
 			if len(entry.PINHash) > 0 {
 				session.Account.PINHash = entry.PINHash
+			}
+			if len(entry.WebAuthnCreds) > 0 {
+				session.Account.WebAuthnCreds = entry.WebAuthnCreds
 			}
 
 			sm.mu.Lock()

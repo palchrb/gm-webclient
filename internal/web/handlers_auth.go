@@ -18,6 +18,7 @@ type requestOTPResponse struct {
 	ValidUntil        *string `json:"validUntil,omitempty"`
 	AttemptsRemaining *int    `json:"attemptsRemaining,omitempty"`
 	NeedPIN           bool    `json:"needPin,omitempty"`
+	NeedPasskey       bool    `json:"needPasskey,omitempty"`
 }
 
 type confirmOTPRequest struct {
@@ -51,18 +52,31 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If account already exists with a PIN, user can log in with PIN instead of OTP.
-	if acct := s.sessions.GetAccount(req.Phone); acct != nil && len(acct.PINHash) > 0 {
-		s.logger.Info("Account active with PIN, requesting PIN login", "phone", req.Phone)
-		writeJSON(w, http.StatusOK, requestOTPResponse{
-			Phone:   req.Phone,
-			NeedPIN: true,
-		})
-		return
+	// If account already exists, offer passkey or PIN login instead of OTP.
+	if acct := s.sessions.GetAccount(req.Phone); acct != nil {
+		acct.credMu.RLock()
+		hasPasskey := len(acct.WebAuthnCreds) > 0
+		acct.credMu.RUnlock()
+
+		if hasPasskey && s.webAuthn != nil {
+			s.logger.Info("Account active with passkey, requesting passkey login", "phone", req.Phone)
+			writeJSON(w, http.StatusOK, requestOTPResponse{
+				Phone:       req.Phone,
+				NeedPasskey: true,
+			})
+			return
+		}
+		if len(acct.PINHash) > 0 {
+			s.logger.Info("Account active with PIN, requesting PIN login", "phone", req.Phone)
+			writeJSON(w, http.StatusOK, requestOTPResponse{
+				Phone:   req.Phone,
+				NeedPIN: true,
+			})
+			return
+		}
 	}
 
-	// Account exists but no PIN, or no account at all — proceed with normal OTP.
-	// The confirm-otp endpoint accepts an optional PIN to set it.
+	// No account, or account without passkey/PIN — proceed with normal OTP.
 
 	if req.DeviceName == "" {
 		req.DeviceName = "Garmin Messenger"
@@ -145,9 +159,7 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		}
 		session.Account.pushMu.Unlock()
 	}
-	session.Account.SSE.OnNoSubscribers(func(event SSEEvent) {
-		s.sendWebPush(session.Account, event)
-	})
+	s.wirePushCallback(session.Account)
 
 	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
 	s.PersistSessions()

@@ -92,13 +92,16 @@ async function requestOTP() {
         const resp = await api('/api/auth/request-otp', { method: 'POST', body: { phone } });
         document.getElementById('phone-step').classList.add('hidden');
 
-        if (resp.needPin) {
+        if (resp.needPasskey) {
+            // Account active with passkey — start WebAuthn login
+            await passkeyLogin(phone);
+        } else if (resp.needPin) {
             // Account active with PIN — show PIN login
             document.getElementById('pin-step').classList.remove('hidden');
             document.getElementById('pin-phone').textContent = phone;
             document.getElementById('pin-input').focus();
         } else {
-            // Normal OTP flow — also offer to set a PIN for future logins
+            // Normal OTP flow
             document.getElementById('otp-step').classList.remove('hidden');
             document.getElementById('otp-phone').textContent = phone;
             document.getElementById('otp-pin-input').classList.remove('hidden');
@@ -131,6 +134,9 @@ async function confirmOTP() {
         loadConversations();
         connectSSE();
         setupPushNotifications();
+        setupClipboardPaste();
+        // Offer passkey registration after successful OTP login
+        offerPasskeyRegistration();
     } catch (e) {
         showError(e.message || 'Invalid code');
     } finally {
@@ -163,6 +169,121 @@ async function pinLogin() {
     }
 }
 
+// ─── Passkey (WebAuthn) ─────────────────────────────────────────────────────
+
+function bufferToBase64url(buf) {
+    const bytes = new Uint8Array(buf);
+    let str = '';
+    for (const b of bytes) str += String.fromCharCode(b);
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlToBuffer(b64) {
+    const padded = b64.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
+async function passkeyLogin(phone) {
+    try {
+        setLoading(true);
+        const options = await api('/api/passkey/login/begin', { method: 'POST', body: { phone } });
+
+        // Decode challenge and credential IDs
+        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+        if (options.publicKey.allowCredentials) {
+            for (const c of options.publicKey.allowCredentials) {
+                c.id = base64urlToBuffer(c.id);
+            }
+        }
+
+        const assertion = await navigator.credentials.get(options);
+
+        // Encode response for server
+        const body = JSON.stringify({
+            id: assertion.id,
+            rawId: bufferToBase64url(assertion.rawId),
+            type: assertion.type,
+            response: {
+                authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+                clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+                signature: bufferToBase64url(assertion.response.signature),
+                userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : '',
+            },
+        });
+
+        const resp = await fetch('/api/passkey/login/finish?phone=' + encodeURIComponent(phone), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.error || 'Passkey login failed');
+        }
+        const data = await resp.json();
+        state.loggedIn = true;
+        state.phone = data.phone;
+        state.userId = data.userId;
+        showChatView();
+        loadConversations();
+        connectSSE();
+        setupPushNotifications();
+        setupClipboardPaste();
+    } catch (e) {
+        if (e.name === 'NotAllowedError') {
+            // User cancelled — show phone step again
+            document.getElementById('phone-step').classList.remove('hidden');
+            return;
+        }
+        showError(e.message || 'Passkey login failed');
+        document.getElementById('phone-step').classList.remove('hidden');
+    } finally {
+        setLoading(false);
+    }
+}
+
+async function offerPasskeyRegistration() {
+    // Only offer if WebAuthn is available and the endpoint exists
+    if (!window.PublicKeyCredential) return;
+    try {
+        const options = await api('/api/passkey/register/begin', { method: 'POST' });
+
+        // Decode server values
+        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+        options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
+        if (options.publicKey.excludeCredentials) {
+            for (const c of options.publicKey.excludeCredentials) {
+                c.id = base64urlToBuffer(c.id);
+            }
+        }
+
+        const credential = await navigator.credentials.create(options);
+
+        // Encode for server
+        const body = JSON.stringify({
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+                attestationObject: bufferToBase64url(credential.response.attestationObject),
+                clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+            },
+        });
+
+        await fetch('/api/passkey/register/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        });
+        console.log('Passkey registered successfully');
+    } catch (e) {
+        // User declined or WebAuthn not supported — that's fine
+        console.log('Passkey registration skipped:', e.message || e);
+    }
+}
 
 async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
