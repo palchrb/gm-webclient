@@ -644,6 +644,7 @@ function replaceOptimisticMessage(convId, tempId, realId, sendState) {
         const el = document.querySelector(`[data-msgid="${tempId}"]`);
         if (el) {
             el.dataset.msgid = realId;
+            el.classList.remove('message-sending');
             const statusEl = el.querySelector('.message-status');
             if (statusEl) statusEl.innerHTML = '&#10003;'; // ✓
         }
@@ -695,6 +696,49 @@ async function reloadCurrentConversation(delayMs) {
         scrollToBottom();
     } catch (e) {
         console.error('Failed to reload conversation:', e);
+    }
+}
+
+// Lightweight catch-up: fetch messages from server, append only new ones.
+// No full renderMessages() — prevents scroll jitter on tab focus.
+async function catchUpConversation(convId) {
+    if (!convId) return;
+    try {
+        const resp = await api(`/api/conversations/${convId}?limit=200`);
+        if (state.currentConversationId !== convId) return; // user navigated away
+        const serverMsgs = (resp.messages || []).sort(
+            (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+        );
+        const existingIds = new Set(state.messages.map(m => m.messageId));
+        let added = false;
+        for (const msg of serverMsgs) {
+            if (existingIds.has(msg.messageId)) continue;
+            state.messages.push(msg);
+            if (!isReactionMessage(msg)) {
+                appendMessageToDOM(msg);
+                added = true;
+            }
+        }
+        // Also update existing messages that may have gained media
+        for (const msg of serverMsgs) {
+            const existing = state.messages.find(m => m.messageId === msg.messageId && m._sendState);
+            if (existing && msg.mediaId && !existing.mediaId) {
+                Object.assign(existing, msg);
+                delete existing._sendState;
+                delete existing._errorMsg;
+                rebuildMessageDOM(msg.messageId);
+            }
+        }
+        cache.set('msgs_' + convId, state.messages);
+        if (added) scrollToBottom();
+
+        // Mark last message as read
+        if (state.messages.length > 0) {
+            const lastMsg = state.messages[state.messages.length - 1];
+            markAsRead(convId, lastMsg.messageId);
+        }
+    } catch (e) {
+        console.error('Failed to catch up conversation:', e);
     }
 }
 
@@ -866,8 +910,9 @@ async function sendMediaFile(file, caption) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Reload after delay to let Garmin propagate the message.
-        reloadCurrentConversation(2000);
+        // Swap temp ID for real ID — SSE will deliver the full message
+        // (with mediaId/mediaType) which triggers rebuildMessageDOM().
+        replaceOptimisticMessage(convId, tempId, data.messageId, 'sent');
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -1035,12 +1080,12 @@ function connectSSE() {
         console.error('SSE error, will auto-reconnect');
     });
 
-    // Reconnect and catch up on tab focus
+    // Catch up on tab focus — lightweight diff, no full re-render
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden && state.loggedIn) {
             loadConversations();
             if (state.currentConversationId) {
-                selectConversation(state.currentConversationId);
+                catchUpConversation(state.currentConversationId);
             }
         }
     });
@@ -1101,8 +1146,19 @@ function handleIncomingMessage(msg) {
 
     // If viewing this conversation, handle the message
     if (state.currentConversationId === convId) {
-        // Avoid duplicates (including optimistic messages already shown)
-        if (!state.messages.find(m => m.messageId === msg.messageId)) {
+        const existing = state.messages.find(m => m.messageId === msg.messageId);
+        if (existing) {
+            // Message ID already in state (e.g. from replaceOptimisticMessage after
+            // media send). Merge server data (mediaId, mediaType, etc.) and rebuild
+            // the DOM element so media/audio actually renders.
+            const hadMedia = existing.mediaId;
+            Object.assign(existing, msg);
+            delete existing._sendState;
+            delete existing._errorMsg;
+            if (!hadMedia && existing.mediaId) {
+                rebuildMessageDOM(existing.messageId);
+            }
+        } else {
             state.messages.push(msg);
             cache.set('msgs_' + convId, state.messages);
 
@@ -1754,6 +1810,24 @@ function updateMessageFailed(msgId) {
     if (statusEl) { statusEl.textContent = '!'; statusEl.className = 'message-status failed'; }
     if (msg._errorMsg && !el.querySelector('.message-error')) {
         el.insertAdjacentHTML('beforeend', `<div class="message-error">${escapeHtml(msg._errorMsg)}</div>`);
+    }
+}
+
+// Rebuild a single message's DOM element in-place (e.g. when server data
+// arrives with media that the optimistic placeholder didn't have).
+function rebuildMessageDOM(msgId) {
+    const el = document.querySelector(`[data-msgid="${msgId}"]`);
+    if (!el) return;
+    const msg = state.messages.find(m => m.messageId === msgId);
+    if (!msg) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderSingleMessage(msg, {});
+    const newEl = tmp.firstElementChild;
+    if (newEl) {
+        el.replaceWith(newEl);
+        if (msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000' && msg.mediaType) {
+            loadMediaForMessages();
+        }
     }
 }
 
