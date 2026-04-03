@@ -496,27 +496,37 @@ async function selectConversation(convId) {
     // Close sidebar on mobile
     document.getElementById('sidebar').classList.remove('open');
 
-    // Show cached messages immediately, then refresh from API
-    const cachedMsgs = cache.get('msgs_' + convId); // no TTL — show cached instantly, always refresh below
+    // Show cached messages immediately — no network wait.
+    const cachedMsgs = cache.get('msgs_' + convId);
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
-        scrollToBottom(true);
+        // Synchronous scroll to avoid the 2-frame flicker from rAF-based scroll
+        const container = document.getElementById('messages');
+        container.scrollTop = container.scrollHeight;
     }
 
+    // Refresh from API using lightweight diff — only appends new messages,
+    // no innerHTML nuke, no scroll jump.
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=200`);
-        state.messages = (resp.messages || []).sort(
-            (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
-        );
-        cache.set('msgs_' + convId, state.messages);
-        renderMessages();
-        scrollToBottom(true);
+        if (cachedMsgs) {
+            // We already showed cached, just catch up with any new messages
+            await catchUpConversation(convId);
+        } else {
+            // First visit to this conversation — full load required
+            const resp = await api(`/api/conversations/${convId}?limit=200`);
+            state.messages = (resp.messages || []).sort(
+                (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+            );
+            cache.set('msgs_' + convId, state.messages);
+            renderMessages();
+            const container = document.getElementById('messages');
+            container.scrollTop = container.scrollHeight;
 
-        // Mark last message as read
-        if (state.messages.length > 0) {
-            const lastMsg = state.messages[state.messages.length - 1];
-            markAsRead(convId, lastMsg.messageId);
+            if (state.messages.length > 0) {
+                const lastMsg = state.messages[state.messages.length - 1];
+                markAsRead(convId, lastMsg.messageId);
+            }
         }
     } catch (e) {
         console.error('Failed to load messages:', e);
@@ -719,14 +729,24 @@ async function catchUpConversation(convId) {
                 added = true;
             }
         }
-        // Also update existing messages that may have gained media
+        // Update existing messages that gained media or other server-side fields
         for (const msg of serverMsgs) {
-            const existing = state.messages.find(m => m.messageId === msg.messageId && m._sendState);
-            if (existing && msg.mediaId && !existing.mediaId) {
+            if (!existingIds.has(msg.messageId)) continue;
+            const existing = state.messages.find(m => m.messageId === msg.messageId);
+            if (!existing) continue;
+            const hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
+            const hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
+            if (hasMedia && !hadMedia) {
                 Object.assign(existing, msg);
                 delete existing._sendState;
                 delete existing._errorMsg;
                 rebuildMessageDOM(msg.messageId);
+            } else if (existing._sendState) {
+                // Clear stale send state for confirmed messages
+                delete existing._sendState;
+                delete existing._errorMsg;
+                const el = document.querySelector(`[data-msgid="${msg.messageId}"]`);
+                if (el) el.classList.remove('message-sending');
             }
         }
         cache.set('msgs_' + convId, state.messages);
@@ -910,9 +930,12 @@ async function sendMediaFile(file, caption) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Swap temp ID for real ID — SSE will deliver the full message
-        // (with mediaId/mediaType) which triggers rebuildMessageDOM().
+        // Swap temp ID for real ID and flag that this message needs media.
+        // When the SSE status update confirms "Sent", handleStatusUpdate()
+        // will fetch the full message (with mediaId) and rebuild the DOM.
         replaceOptimisticMessage(convId, tempId, data.messageId, 'sent');
+        const msg = state.messages.find(m => m.messageId === data.messageId);
+        if (msg) msg._needsMedia = true;
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -1155,6 +1178,7 @@ function handleIncomingMessage(msg) {
             Object.assign(existing, msg);
             delete existing._sendState;
             delete existing._errorMsg;
+            delete existing._needsMedia;
             if (!hadMedia && existing.mediaId) {
                 rebuildMessageDOM(existing.messageId);
             }
@@ -1201,6 +1225,17 @@ function handleStatusUpdate(update) {
             msg.status.push({ userId: update.userId || '', messageStatus: update.messageStatus });
         }
         updateMessageStatus(msgId); // surgical DOM update — no re-render
+
+        // When Garmin confirms a media message as Sent, the media attachment
+        // is now available on the server. Fetch the full message to get
+        // mediaId/mediaType and rebuild the DOM to show the actual image
+        // or waveform player.
+        if (msg._needsMedia && (update.messageStatus === 'Sent' || update.messageStatus === 'Delivered')) {
+            delete msg._needsMedia;
+            if (state.currentConversationId) {
+                catchUpConversation(state.currentConversationId);
+            }
+        }
     }
 }
 
