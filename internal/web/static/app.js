@@ -53,15 +53,26 @@ async function init() {
             state.phone = resp.phone;
             state.userId = (resp.userId || '').toLowerCase();
             showChatView();
-            loadConversations();
+            await loadConversations();
             connectSSE();
             setupPushNotifications();
             setupNtfyButton();
             setupClipboardPaste();
+
+            // Open conversation from URL hash (e.g. #conversation/<id> from ntfy)
+            var hash = window.location.hash;
+            if (hash.startsWith('#conversation/')) {
+                var convId = hash.replace('#conversation/', '');
+                if (convId) selectConversation(convId);
+                history.replaceState(null, '', window.location.pathname);
+            }
+            return;
         }
     } catch (e) {
-        // Not logged in, show login view
+        // Not logged in
     }
+    // Show login view only after confirming not logged in
+    document.getElementById('login-view').classList.remove('hidden');
 }
 
 // Paste images from clipboard directly into the composer
