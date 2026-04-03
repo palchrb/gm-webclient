@@ -754,38 +754,54 @@ async function catchUpConversation(convId) {
         const serverMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
-        const existingIds = new Set(state.messages.map(m => m.messageId));
+        // Check if cached order differs from server order
+        const existingMap = {};
+        for (const m of state.messages) existingMap[m.messageId] = m;
+        const cachedOrder = state.messages.filter(m => !m.messageId.startsWith('sending-')).map(m => m.messageId);
+        const serverOrder = serverMsgs.map(m => m.messageId);
+        const sharedCached = cachedOrder.filter(id => serverOrder.includes(id));
+        const sharedServer = serverOrder.filter(id => cachedOrder.includes(id));
+        var needsRerender = sharedCached.join(',') !== sharedServer.join(',');
+
         let added = false;
         for (const msg of serverMsgs) {
-            if (existingIds.has(msg.messageId)) continue;
-            state.messages.push(msg);
-            if (!isReactionMessage(msg)) {
-                appendMessageToDOM(msg);
+            const existing = existingMap[msg.messageId];
+            if (!existing) {
+                state.messages.push(msg);
+                if (!needsRerender && !isReactionMessage(msg)) {
+                    appendMessageToDOM(msg);
+                }
                 added = true;
+                continue;
             }
-        }
-        // Update existing messages that gained media or other server-side fields
-        for (const msg of serverMsgs) {
-            if (!existingIds.has(msg.messageId)) continue;
-            const existing = state.messages.find(m => m.messageId === msg.messageId);
-            if (!existing) continue;
-            const hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
-            const hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
+            var hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
+            var hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
             if (hasMedia && !hadMedia) {
                 Object.assign(existing, msg);
                 delete existing._sendState;
                 delete existing._errorMsg;
-                rebuildMessageDOM(msg.messageId);
+                if (!needsRerender) rebuildMessageDOM(msg.messageId);
             } else if (existing._sendState) {
-                // Clear stale send state for confirmed messages
                 delete existing._sendState;
                 delete existing._errorMsg;
-                const el = document.querySelector(`[data-msgid="${msg.messageId}"]`);
-                if (el) el.classList.remove('message-sending');
+                if (!needsRerender) {
+                    var el = document.querySelector('[data-msgid="' + msg.messageId + '"]');
+                    if (el) el.classList.remove('message-sending');
+                }
             }
         }
+
+        if (needsRerender) {
+            state.messages.sort(function(a, b) {
+                return new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0);
+            });
+            renderMessages();
+            var container = document.getElementById('messages');
+            container.scrollTop = container.scrollHeight;
+        }
+
         cache.set('msgs_' + convId, state.messages);
-        if (added) scrollToBottom();
+        if (added && !needsRerender) scrollToBottom();
 
         // Mark last message as read
         if (state.messages.length > 0) {
