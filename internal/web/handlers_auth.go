@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -71,9 +72,9 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		req.DeviceName = "Garmin Messenger"
 	}
 
-	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
-
-	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, req.DeviceName)
+	// Reuse existing pending auth if we already have one for this phone.
+	// This avoids creating duplicate app registrations on Garmin's side.
+	auth, otpReq, err := s.requestOTPForPhone(r.Context(), req.Phone, req.DeviceName, false)
 	if err != nil {
 		s.logger.Error("OTP request failed", "phone", req.Phone, "error", err)
 		if apiErr, ok := err.(*gm.APIError); ok {
@@ -114,9 +115,7 @@ func (s *Server) handleRequestReauthOTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
-
-	otpReq, err := auth.RequestOTP(r.Context(), req.Phone, "Garmin Messenger")
+	auth, otpReq, err := s.requestOTPForPhone(r.Context(), req.Phone, "Garmin Messenger", true)
 	if err != nil {
 		s.logger.Error("Reauth OTP request failed", "phone", req.Phone, "error", err)
 		if apiErr, ok := err.(*gm.APIError); ok {
@@ -134,6 +133,31 @@ func (s *Server) handleRequestReauthOTP(w http.ResponseWriter, r *http.Request) 
 		ValidUntil:        otpReq.ValidUntil,
 		AttemptsRemaining: otpReq.AttemptsRemaining,
 	})
+}
+
+// requestOTPForPhone reuses an existing pending HermesAuth if available,
+// to avoid creating duplicate app registrations on Garmin's side.
+// If no pending auth exists (or it's stale), creates a fresh one.
+func (s *Server) requestOTPForPhone(ctx context.Context, phone, deviceName string, isReauth bool) (*gm.HermesAuth, *gm.OtpRequest, error) {
+	// Check for recent pending OTP — reuse the same HermesAuth to avoid ghost registrations
+	if pending := s.sessions.PeekPendingOTP(phone); pending != nil && pending.IsReauth == isReauth {
+		s.logger.Info("Reusing existing pending OTP auth", "phone", phone)
+		// Re-request OTP on the same auth object (same Garmin registration)
+		otpReq, err := pending.Auth.RequestOTP(ctx, phone, deviceName)
+		if err != nil {
+			// Existing auth failed — fall through to create fresh one
+			s.logger.Warn("Reusing pending auth failed, creating fresh", "phone", phone, "error", err)
+		} else {
+			return pending.Auth, otpReq, nil
+		}
+	}
+
+	auth := gm.NewHermesAuth(gm.WithLogger(s.logger))
+	otpReq, err := auth.RequestOTP(ctx, phone, deviceName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return auth, otpReq, nil
 }
 
 func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
