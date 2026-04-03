@@ -824,6 +824,40 @@ async function catchUpConversation(convId) {
     }
 }
 
+// Targeted fetch for a single message that needs media (image/audio).
+// Uses newerThanId with the previous message to fetch only 1-5 messages.
+async function fetchMediaForMessage(convId, msgId) {
+    var prevId = '';
+    for (var i = 0; i < state.messages.length; i++) {
+        if (state.messages[i].messageId === msgId) break;
+        if (!state.messages[i].messageId.startsWith('sending-')) {
+            prevId = state.messages[i].messageId;
+        }
+    }
+    var url = '/api/conversations/' + convId + '?limit=5';
+    if (prevId) url += '&newerThanId=' + prevId;
+
+    try {
+        var resp = await api(url);
+        var msgs = resp.messages || [];
+        var serverMsg = msgs.find(function(m) { return m.messageId === msgId; });
+        if (!serverMsg) return;
+        var existing = state.messages.find(function(m) { return m.messageId === msgId; });
+        if (!existing) return;
+        var hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
+        Object.assign(existing, serverMsg);
+        delete existing._sendState;
+        delete existing._errorMsg;
+        delete existing._needsMedia;
+        cache.set('msgs_' + convId, state.messages);
+        if (serverMsg.mediaId && !hadMedia) {
+            rebuildMessageDOM(msgId);
+        }
+    } catch (e) {
+        console.error('Failed to fetch media for message:', e);
+    }
+}
+
 async function loadOlderMessages() {
     const convId = state.currentConversationId;
     if (!convId || state.messages.length === 0) return;
@@ -1295,7 +1329,7 @@ function handleStatusUpdate(update) {
         if (msg._needsMedia && (update.messageStatus === 'Sent' || update.messageStatus === 'Delivered')) {
             delete msg._needsMedia;
             if (state.currentConversationId) {
-                catchUpConversation(state.currentConversationId);
+                fetchMediaForMessage(state.currentConversationId, msgId);
             }
         }
     }
