@@ -213,25 +213,29 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 
 	// Determine if passkey setup is needed:
 	// - Reauth (passkey already verified, tokens refreshed): no setup needed
-	// - Passkey already verified via PopPasskeyVerified: no setup needed (lost passkey OTP, will re-register)
-	// - WebAuthn available and no passkey yet: need setup
-	// - ForceOTP (lost passkey): clear old passkeys, need setup
+	// - ForceOTP fallback (passkey login failed, e.g. timeout): keep existing
+	//   passkeys, no setup needed — the passkey itself is probably still valid
+	// - Fresh first login (no passkeys at all): need setup
 	needPasskeySetup := false
-	if s.webAuthn == nil || s.passkeyStore == nil {
-		s.logger.Debug("Passkey setup skipped (ORIGIN not configured)", "phone", req.Phone,
-			"webAuthn", s.webAuthn != nil, "passkeyStore", s.passkeyStore != nil)
-	}
 	if s.webAuthn != nil && s.passkeyStore != nil {
 		passkeyVerified := s.sessions.PopPasskeyVerified(req.Phone)
+		hasPasskeys := s.passkeyStore.HasCredentials(req.Phone)
+
 		if pending.IsReauth || passkeyVerified {
-			// Reauth or lost-passkey OTP — passkey will be re-registered by frontend
-			needPasskeySetup = !s.passkeyStore.HasCredentials(req.Phone) || passkeyVerified
+			// Passkey was verified (reauth) — no new passkey needed.
+			// The existing passkey works fine; we just needed fresh Garmin tokens.
+			needPasskeySetup = false
+		} else if hasPasskeys {
+			// User has passkeys but used OTP (forceOTP fallback, or manual OTP).
+			// Keep existing passkeys — they're probably still valid.
+			// Don't force re-registration on every OTP fallback.
+			needPasskeySetup = false
 		} else {
-			// Fresh first login — always need passkey
+			// No passkeys at all — first login, need to set one up.
 			needPasskeySetup = true
-			// Clear any old passkeys (fresh OTP = fresh start)
-			s.passkeyStore.Save(req.Phone, nil)
 		}
+	} else if s.webAuthn == nil || s.passkeyStore == nil {
+		s.logger.Debug("Passkey setup skipped (ORIGIN not configured)", "phone", req.Phone)
 	}
 
 	writeJSON(w, http.StatusOK, confirmOTPResponse{
