@@ -2234,14 +2234,25 @@ async function setupNtfyButton() {
 function openNtfySubscribe() {
     if (!ntfyInfo) return;
 
-    // Android: use ntfy:// deep link to open app directly
     var ua = navigator.userAgent || '';
-    if (/android/i.test(ua) && ntfyInfo.appUrl) {
+    var isAndroid = /android/i.test(ua);
+    var isIOS = /iP(hone|ad|od)/i.test(ua);
+
+    // Android: use ntfy:// deep link to open app directly
+    if (isAndroid && ntfyInfo.appUrl) {
+        hideNotificationMenu();
         window.location.href = ntfyInfo.appUrl;
         return;
     }
 
-    // iOS / desktop: show topic info with copy button
+    // Desktop: open ntfy web interface for the topic
+    if (!isIOS) {
+        hideNotificationMenu();
+        window.open(ntfyInfo.server + '/' + ntfyInfo.topic, '_blank');
+        return;
+    }
+
+    // iOS: show topic info with copy button (no deep link support)
     hideNotificationMenu();
 
     var server = ntfyInfo.server === 'https://ntfy.sh' ? '' : ntfyInfo.server;
