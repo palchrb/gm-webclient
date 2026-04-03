@@ -176,8 +176,7 @@ function base64urlToBuffer(b64) {
     return bytes.buffer;
 }
 
-// mode: 'replace' (default, mandatory setup) or 'add' (additional passkey)
-async function registerPasskey(mode) {
+async function registerPasskey() {
     setLoading(true);
     hideError();
 
@@ -204,8 +203,7 @@ async function registerPasskey(mode) {
             },
         });
 
-        const finishUrl = '/api/passkey/register/finish' + (mode === 'add' ? '?mode=add' : '');
-        const resp = await fetch(finishUrl, {
+        const resp = await fetch('/api/passkey/register/finish', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body,
@@ -215,7 +213,7 @@ async function registerPasskey(mode) {
             throw new Error(err.error || 'Passkey registration failed');
         }
 
-        console.log('Passkey registered (' + (mode || 'replace') + ')');
+        console.log('Passkey registered');
 
         // Enter chat with the pending login state (mandatory setup flow)
         if (state._pendingLogin) {
@@ -344,13 +342,8 @@ async function addPasskey() {
         alert('Passkeys are not supported in this browser.');
         return;
     }
-    const mode = confirm(
-        'Add this passkey alongside existing ones?\n\n' +
-        'OK = Add (keep existing passkeys)\n' +
-        'Cancel = Replace all existing passkeys'
-    ) ? 'add' : 'replace';
     try {
-        await registerPasskey(mode);
+        await registerPasskey();
         alert('Passkey registered!');
     } catch (e) {
         // registerPasskey already handles errors
