@@ -21,7 +21,6 @@ const (
 	signalRIdleTimeout = 2 * time.Minute // pause SignalR when no browser is listening
 	reaperInterval     = 30 * time.Second
 	defaultSessionDays = 30
-	accountOrphanGrace = 30 * time.Minute // keep account alive after last session for passkey re-login
 
 	fcmInitialBackoff = 5 * time.Second
 	fcmMaxBackoff     = 5 * time.Minute
@@ -53,7 +52,6 @@ type UserAccount struct {
 	fcmCancel      context.CancelFunc
 	signalRStarted bool
 	fcmStarted     bool
-	orphanedAt     time.Time // set when last session is removed; zero when sessions exist
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +247,6 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 
 	sm.mu.Lock()
 	acct := sm.getOrCreateAccount(phone, auth, logger)
-	acct.orphanedAt = time.Time{} // clear orphan marker — account is active again
 	session := &UserSession{
 		ID:           sessionID,
 		Account:      acct,
@@ -374,9 +371,9 @@ func (sm *SessionManager) GetFromRequest(r *http.Request) *UserSession {
 	return sm.GetSession(cookie.Value)
 }
 
-// RemoveSession removes a browser session. The Garmin account is kept alive
-// for a grace period so passkey re-login works without OTP. The reaper
-// cleans up orphaned accounts after accountOrphanGrace.
+// RemoveSession removes a browser session (cookie). The Garmin account is
+// kept alive so passkey re-login works without OTP and FCM push continues.
+// Only RemoveAllForPhone (full logout) stops the account and deregisters.
 func (sm *SessionManager) RemoveSession(sessionID string) {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionID]
@@ -386,24 +383,9 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	}
 	delete(sm.sessions, sessionID)
 	phone := session.Account.Phone
-
-	// Check if any other sessions still reference this account
-	accountInUse := false
-	for _, s := range sm.sessions {
-		if s.Account.Phone == phone {
-			accountInUse = true
-			break
-		}
-	}
-
-	if !accountInUse {
-		// Mark account as orphaned — reaper will clean up after grace period.
-		// This lets passkey login reuse the account without needing OTP.
-		session.Account.orphanedAt = time.Now()
-		sm.logger.Info("Session removed, account kept for passkey re-login",
-			"phone", phone, "grace", accountOrphanGrace)
-	}
 	sm.mu.Unlock()
+
+	sm.logger.Info("Session removed, account kept alive", "phone", phone)
 }
 
 // RemoveAllForPhone removes ALL sessions for a phone and stops the Garmin account.
@@ -574,32 +556,11 @@ func (sm *SessionManager) reaper() {
 			}
 		}
 
-		// For each account, check if it still has active sessions
+		// For each account, pause SignalR if no browser tabs are listening.
+		// Accounts are NOT stopped here — only RemoveAllForPhone (full logout)
+		// stops accounts. This keeps FCM alive for web push notifications
+		// even when no browser is open.
 		for phone, acct := range sm.accounts {
-			hasSession := false
-			for _, s := range sm.sessions {
-				if s.Account.Phone == phone {
-					hasSession = true
-					break
-				}
-			}
-
-			if !hasSession {
-				// Respect grace period — keep account alive for passkey re-login
-				if acct.orphanedAt.IsZero() {
-					acct.orphanedAt = now
-				}
-				if now.Sub(acct.orphanedAt) > accountOrphanGrace {
-					sm.logger.Info("Orphaned account grace expired, stopping", "phone", phone)
-					sm.stopAccount(acct)
-					delete(sm.accounts, phone)
-				}
-				continue
-			}
-			// Account has sessions — clear orphan marker
-			acct.orphanedAt = time.Time{}
-
-			// If no SSE subscribers, pause SignalR but keep FCM for push
 			if acct.SSE.SubscriberCount() == 0 && acct.signalRStarted {
 				sm.logger.Info("Pausing SignalR (no browser tabs)", "phone", phone)
 				acct.SignalR.Stop()
