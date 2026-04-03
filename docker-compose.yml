@@ -19,12 +19,23 @@ services:
       - SESSION_DAYS=${SESSION_DAYS:-7}
       # Set a secret key to persist sessions across Docker restarts.
       # Sessions are AES-256-GCM encrypted on disk — the file is useless without this key.
-      # Leave empty to keep sessions in memory only (re-login required after restart).
-      # Example: SESSION_KEY=my-secret-key-change-me
+      # Leave empty to auto-generate a key (sessions persist but key is lost if volume is deleted).
       - SESSION_KEY=${SESSION_KEY:-}
+      # Origin URL for passkey (WebAuthn) support and ntfy click links.
+      # Set to your public HTTPS URL to enable passkeys.
+      # Example: ORIGIN=https://messenger.example.com
+      - ORIGIN=${ORIGIN:-}
+      # Push notification behavior: "true" sends push even when browser tabs are open.
+      # Set to "false" to only push when no browser tabs are connected.
+      - PUSH_ALWAYS=${PUSH_ALWAYS:-true}
+      # ntfy.sh push notifications (optional). Set to your ntfy server URL to enable.
+      # Notifications are sent alongside Web Push when messages arrive.
+      # Example: NTFY_URL=https://ntfy.sh
+      - NTFY_URL=${NTFY_URL:-}
+      # Include full message body in ntfy notifications (default: false).
+      # When false, only "New message" is sent for privacy.
+      - NTFY_FULL_MESSAGE=${NTFY_FULL_MESSAGE:-false}
     command: ["/usr/bin/garmin-web", "-addr", ":8080", "-data-dir", "/data"]
-    # Volume stores FCM credentials only (Google device IDs for push).
-    # Garmin auth tokens are NOT stored on disk.
 
 volumes:
   garmin-web-data:
