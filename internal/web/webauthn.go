@@ -121,14 +121,28 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Add to existing or replace all credentials
-	if r.URL.Query().Get("mode") == "add" {
-		existing := s.passkeyStore.Load(phone)
-		s.passkeyStore.Save(phone, append(existing, *cred))
-	} else {
-		s.passkeyStore.Save(phone, []webauthn.Credential{*cred})
+	// Always accumulate credentials — never replace. The browser/OS keychain
+	// keeps ALL passkeys, and WebAuthn has no API to delete old ones from the
+	// device. If we only stored the newest, login would fail whenever the
+	// browser picks an older credential from the keychain.
+	existing := s.passkeyStore.Load(phone)
+
+	// Deduplicate: if this credential ID already exists, update it in place
+	// (e.g. re-registering the same authenticator updates the counter).
+	found := false
+	for i, c := range existing {
+		if string(c.ID) == string(cred.ID) {
+			existing[i] = *cred
+			found = true
+			break
+		}
 	}
-	s.logger.Info("Passkey registered", "phone", phone)
+	if !found {
+		existing = append(existing, *cred)
+	}
+
+	s.passkeyStore.Save(phone, existing)
+	s.logger.Info("Passkey registered", "phone", phone, "totalCredentials", len(existing))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
