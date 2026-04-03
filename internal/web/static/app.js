@@ -2225,6 +2225,15 @@ async function setupNtfyButton() {
 
 function openNtfySubscribe() {
     if (!ntfyInfo) return;
+
+    // Android: use ntfy:// deep link to open app directly
+    var ua = navigator.userAgent || '';
+    if (/android/i.test(ua) && ntfyInfo.appUrl) {
+        window.location.href = ntfyInfo.appUrl;
+        return;
+    }
+
+    // iOS / desktop: show topic info with copy button
     var modal = document.getElementById('account-modal');
     if (modal) modal.classList.add('hidden');
 
