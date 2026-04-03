@@ -800,7 +800,14 @@ async function catchUpConversation(convId) {
                 continue;
             }
             state.messages.push(msg);
-            if (!isReactionMessage(msg)) {
+            if (isReactionMessage(msg)) {
+                // New reaction arrived — find target and update its badge
+                var r = extractReaction(msg);
+                if (r) {
+                    var target = findReactionTarget(r, msg);
+                    if (target) updateMessageReactions(target.messageId);
+                }
+            } else {
                 appendMessageToDOM(msg);
                 added = true;
             }
@@ -1286,10 +1293,7 @@ function handleIncomingMessage(msg) {
                 // Reaction messages aren't shown in timeline — update target's badges
                 const r = extractReaction(msg);
                 if (r) {
-                    const target = state.messages.find(m =>
-                        !isReactionMessage(m) &&
-                        (m.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim() === r.targetText
-                    );
+                    const target = findReactionTarget(r, msg);
                     if (target) {
                         // Clear matching optimistic reaction (server confirmed it)
                         if (target._reactions) {
@@ -1389,6 +1393,27 @@ function extractReaction(msg) {
     return { emoji: match[1], targetText: match[2] };
 }
 
+// Find the target message for a reaction by matching body text,
+// preferring the message closest in time (before the reaction).
+function findReactionTarget(r, reactionMsg) {
+    const reactionTime = new Date(reactionMsg.sentAt || reactionMsg.receivedAt || 0).getTime();
+    let target = null;
+    let bestTimeDiff = Infinity;
+    for (const candidate of state.messages) {
+        if (candidate.messageId === reactionMsg.messageId) continue;
+        if (isReactionMessage(candidate)) continue;
+        const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
+        if (candidateBody !== r.targetText) continue;
+        const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
+        const diff = Math.abs(reactionTime - candidateTime);
+        if (diff < bestTimeDiff) {
+            bestTimeDiff = diff;
+            target = candidate;
+        }
+    }
+    return target;
+}
+
 function renderMessages() {
     const container = document.getElementById('messages');
     if (state.messages.length === 0) {
@@ -1407,26 +1432,7 @@ function renderMessages() {
         if (!r) continue;
         reactionMsgIds.add(msg.messageId);
 
-        // Find target: message whose body matches, closest in time to the reaction
-        const reactionTime = new Date(msg.sentAt || msg.receivedAt || 0).getTime();
-        let target = null;
-        let bestTimeDiff = Infinity;
-
-        for (const candidate of state.messages) {
-            if (candidate.messageId === msg.messageId) continue;
-            if (isReactionMessage(candidate)) continue;
-            const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-            if (candidateBody !== r.targetText) continue;
-
-            const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
-            // Prefer messages BEFORE the reaction (reaction should be after its target)
-            // but also consider messages slightly after (in case of clock skew)
-            const diff = Math.abs(reactionTime - candidateTime);
-            if (diff < bestTimeDiff) {
-                bestTimeDiff = diff;
-                target = candidate;
-            }
-        }
+        const target = findReactionTarget(r, msg);
         if (target) {
             if (!reactions[target.messageId]) reactions[target.messageId] = [];
             reactions[target.messageId].push({
