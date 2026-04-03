@@ -1245,6 +1245,10 @@ function computeOfflineUnread() {
 
 function handleIncomingMessage(msg) {
     const convId = msg.conversationId;
+    const isReaction = isReactionMessage(msg);
+    console.log('handleIncomingMessage:', msg.messageId, 'isReaction:', isReaction,
+        'body:', msg.messageBody ? JSON.stringify(msg.messageBody.slice(0, 80)) : null,
+        'from:', msg.from, 'isMine:', isMine(msg));
 
     // Deduplicate: same message can arrive via both SignalR and FCM
     if (msg.messageId && msg.messageId === lastHandledMessageId) return;
@@ -1292,8 +1296,10 @@ function handleIncomingMessage(msg) {
             if (isReactionMessage(msg)) {
                 // Reaction messages aren't shown in timeline — update target's badges
                 const r = extractReaction(msg);
+                console.log('  Reaction extracted:', r);
                 if (r) {
                     const target = findReactionTarget(r, msg);
+                    console.log('  Reaction target:', target ? target.messageId : 'NOT FOUND');
                     if (target) {
                         // Clear matching optimistic reaction (server confirmed it)
                         if (target._reactions) {
