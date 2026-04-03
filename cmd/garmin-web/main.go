@@ -93,6 +93,20 @@ func main() {
 		opts = append(opts, web.WithOrigin(originStr))
 	}
 
+	// ntfy.sh push notification forwarding
+	if ntfyURL := os.Getenv("NTFY_URL"); ntfyURL != "" && *dataDir != "" {
+		hmacKey, err := web.LoadOrGenerateNtfyHMACKey(*dataDir)
+		if err != nil {
+			log.Fatalf("Failed to load/generate ntfy HMAC key: %v", err)
+		}
+		opts = append(opts, web.WithNtfyConfig(&web.NtfyConfig{
+			BaseURL:  ntfyURL,
+			HMACKey:  hmacKey,
+			ClickURL: originStr,
+		}))
+		log.Printf("ntfy push enabled (server: %s)", ntfyURL)
+	}
+
 	// Push always: send web push even when browser tabs are open (default true)
 	pushAlways := true
 	if envPush := os.Getenv("PUSH_ALWAYS"); envPush != "" {

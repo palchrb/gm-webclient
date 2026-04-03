@@ -56,6 +56,7 @@ async function init() {
             loadConversations();
             connectSSE();
             setupPushNotifications();
+            setupNtfyButton();
             setupClipboardPaste();
         }
     } catch (e) {
@@ -96,6 +97,7 @@ function enterChat(resp) {
     loadConversations();
     connectSSE();
     setupPushNotifications();
+    setupNtfyButton();
     setupClipboardPaste();
 }
 
@@ -2200,6 +2202,30 @@ function urlBase64ToUint8Array(base64String) {
         outputArray[i] = rawData.charCodeAt(i);
     }
     return outputArray;
+}
+
+// ─── ntfy Push Notifications ─────────────────────────────────────────────────
+var ntfySubscribeUrl = '';
+
+async function setupNtfyButton() {
+    try {
+        var resp = await api('/api/ntfy/info');
+        var btn = document.getElementById('ntfy-btn');
+        if (!btn) return;
+        if (resp.enabled && resp.subscribeUrl) {
+            ntfySubscribeUrl = resp.subscribeUrl;
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+        }
+    } catch (e) {
+        console.log('ntfy setup check failed:', e.message);
+    }
+}
+
+function openNtfySubscribe() {
+    if (!ntfySubscribeUrl) return;
+    window.open(ntfySubscribeUrl, '_blank');
 }
 
 // ─── Start ───────────────────────────────────────────────────────────────────
