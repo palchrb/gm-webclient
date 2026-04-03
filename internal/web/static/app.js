@@ -83,7 +83,7 @@ function setupClipboardPaste() {
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
 function hideAllLoginSteps() {
-    for (const id of ['phone-step', 'otp-step', 'reauth-step', 'passkey-setup-step']) {
+    for (const id of ['phone-step', 'otp-step', 'reauth-step', 'passkey-setup-step', 'passkey-login-step']) {
         document.getElementById(id).classList.add('hidden');
     }
 }
@@ -111,7 +111,8 @@ async function startLogin() {
         hideAllLoginSteps();
 
         if (resp.needPasskey) {
-            await passkeyLogin(phone);
+            // Show passkey step with OTP fallback option
+            document.getElementById('passkey-login-step').classList.remove('hidden');
         } else {
             // Normal OTP flow (first login or no passkey)
             document.getElementById('otp-step').classList.remove('hidden');
@@ -120,6 +121,34 @@ async function startLogin() {
         }
     } catch (e) {
         showError(e.message || 'Could not send code');
+    } finally {
+        setLoading(false);
+    }
+}
+
+// Called from the passkey-login-step "Use passkey" button
+async function doPasskeyLogin() {
+    const phone = document.getElementById('phone-input').value.trim();
+    if (!phone) return;
+    await passkeyLogin(phone);
+}
+
+// Called from the passkey-login-step "Use OTP instead" link
+async function requestOTPInstead() {
+    const phone = document.getElementById('phone-input').value.trim();
+    if (!phone) return;
+
+    setLoading(true);
+    hideError();
+
+    try {
+        await api('/api/auth/request-otp', { method: 'POST', body: { phone, forceOTP: true } });
+        hideAllLoginSteps();
+        document.getElementById('otp-step').classList.remove('hidden');
+        document.getElementById('otp-phone').textContent = phone;
+        document.getElementById('otp-input').focus();
+    } catch (e) {
+        showError(e.message || 'Could not send OTP');
     } finally {
         setLoading(false);
     }
@@ -275,25 +304,20 @@ async function passkeyLogin(phone) {
 
         enterChat(data);
     } catch (e) {
-        if (e.name === 'NotAllowedError') {
-            // User cancelled passkey prompt
-            hideAllLoginSteps();
-            document.getElementById('phone-step').classList.remove('hidden');
-            return;
-        }
-        // Passkey failed — offer OTP fallback with clear message
+        // All passkey failures (cancelled, not found, verification error) → OTP fallback
         hideAllLoginSteps();
-        // Auto-trigger OTP for convenience
         try {
             await api('/api/auth/request-otp', { method: 'POST', body: { phone, forceOTP: true } });
-            showError('Passkey failed — enter the code sent to your phone instead.');
+            const reason = e.name === 'NotAllowedError'
+                ? 'Passkey not available — enter the code sent to your phone.'
+                : 'Passkey failed — enter the code sent to your phone instead.';
+            showError(reason);
             document.getElementById('otp-step').classList.remove('hidden');
             document.getElementById('otp-phone').textContent = phone;
             document.getElementById('otp-input').focus();
         } catch (e2) {
-            // OTP request also failed — show phone step with error
             document.getElementById('phone-step').classList.remove('hidden');
-            showError(e2.message || 'Passkey failed and could not send OTP. Try again.');
+            showError(e2.message || 'Could not send OTP. Try again.');
         }
     } finally {
         setLoading(false);
