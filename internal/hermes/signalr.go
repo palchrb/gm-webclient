@@ -287,7 +287,11 @@ func (r *hermesReceiver) ReceiveMessage(raw json.RawMessage) {
 		unknown, _ := json.Marshal(msg.UnknownFields)
 		r.sr.logger.Warn("ReceiveMessage: unknown fields", "messageId", msg.MessageID, "unknownFields", string(unknown))
 	}
-	r.sr.logger.Info("SignalR ReceiveMessage", "messageId", msg.MessageID, "conversationId", msg.ConversationID)
+	body := ""
+	if msg.MessageBody != nil {
+		body = *msg.MessageBody
+	}
+	r.sr.logger.Info("SignalR ReceiveMessage", "messageId", msg.MessageID, "conversationId", msg.ConversationID, "bodyLen", len(body), "bodyHex", fmt.Sprintf("%x", body))
 	if r.sr.onMessage != nil {
 		r.sr.onMessage(msg)
 	}
