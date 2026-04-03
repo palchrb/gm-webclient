@@ -84,7 +84,11 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 		"tags":     []string{"speech_balloon"},
 	}
 	if srv.ntfyConfig.ClickURL != "" {
-		ntfyPayload["click"] = srv.ntfyConfig.ClickURL
+		clickURL := srv.ntfyConfig.ClickURL
+		if convId, ok := payload["conversationId"]; ok && convId != "" {
+			clickURL += "#conversation/" + convId
+		}
+		ntfyPayload["click"] = clickURL
 	}
 
 	body, err := json.Marshal(ntfyPayload)
