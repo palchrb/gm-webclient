@@ -18,9 +18,10 @@ import (
 
 // NtfyConfig holds ntfy.sh integration settings.
 type NtfyConfig struct {
-	BaseURL  string // e.g. "https://ntfy.sh" or self-hosted URL
-	HMACKey  []byte // secret for deriving per-phone topics
-	ClickURL string // optional: URL opened when user taps the notification
+	BaseURL     string // e.g. "https://ntfy.sh" or self-hosted URL
+	HMACKey     []byte // secret for deriving per-phone topics
+	ClickURL    string // optional: URL opened when user taps the notification
+	FullMessage bool   // if true, include message body; if false, just "New message"
 }
 
 // LoadOrGenerateNtfyHMACKey reads or creates a 32-byte HMAC key for ntfy topic derivation.
@@ -70,10 +71,15 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 
 	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, acct.Phone)
 
+	message := "New message"
+	if srv.ntfyConfig.FullMessage {
+		message = payload["body"]
+	}
+
 	ntfyPayload := map[string]any{
 		"topic":    topic,
 		"title":    payload["title"],
-		"message":  payload["body"],
+		"message":  message,
 		"priority": 4,
 		"tags":     []string{"speech_balloon"},
 	}

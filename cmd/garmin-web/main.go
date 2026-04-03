@@ -99,10 +99,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to load/generate ntfy HMAC key: %v", err)
 		}
+		ntfyFull := os.Getenv("NTFY_FULL_MESSAGE") == "true" || os.Getenv("NTFY_FULL_MESSAGE") == "1"
 		opts = append(opts, web.WithNtfyConfig(&web.NtfyConfig{
-			BaseURL:  ntfyURL,
-			HMACKey:  hmacKey,
-			ClickURL: originStr,
+			BaseURL:     ntfyURL,
+			HMACKey:     hmacKey,
+			ClickURL:    originStr,
+			FullMessage: ntfyFull,
 		}))
 		log.Printf("ntfy push enabled (server: %s)", ntfyURL)
 	}
