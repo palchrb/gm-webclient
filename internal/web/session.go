@@ -395,6 +395,8 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 	if !accountInUse {
 		sm.stopAccount(session.Account)
 		delete(sm.accounts, phone)
+		delete(sm.pendingOTP, phone)
+		delete(sm.pendingReauth, phone)
 	}
 	sm.mu.Unlock()
 
@@ -402,6 +404,7 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 }
 
 // RemoveAllForPhone removes ALL sessions for a phone and stops the Garmin account.
+// Also clears any pending OTP or reauth state to prevent stale auth after logout.
 func (sm *SessionManager) RemoveAllForPhone(phone string) {
 	sm.mu.Lock()
 	for id, s := range sm.sessions {
@@ -413,6 +416,8 @@ func (sm *SessionManager) RemoveAllForPhone(phone string) {
 		sm.stopAccount(acct)
 		delete(sm.accounts, phone)
 	}
+	delete(sm.pendingOTP, phone)
+	delete(sm.pendingReauth, phone)
 	sm.mu.Unlock()
 	sm.logger.Info("All sessions removed + account stopped", "phone", phone)
 }
@@ -427,10 +432,19 @@ func (sm *SessionManager) stopAccount(acct *UserAccount) {
 		acct.fcmCancel()
 	}
 
-	// Deregister with Garmin so the app instance doesn't pile up
+	// Deregister with Garmin so the app instance doesn't pile up.
+	// Try to refresh tokens first if expired — otherwise the DELETE will fail.
 	if acct.Auth.InstanceID != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+
+		if acct.Auth.TokenExpired() {
+			if err := acct.Auth.RefreshHermesToken(ctx); err != nil {
+				sm.logger.Warn("Token refresh failed during deregister, trying anyway",
+					"phone", acct.Phone, "error", err)
+			}
+		}
+
 		if err := acct.Auth.DeleteAppRegistration(ctx, acct.Auth.InstanceID); err != nil {
 			sm.logger.Warn("Failed to deregister with Garmin on logout", "phone", acct.Phone, "error", err)
 		} else {
@@ -451,6 +465,18 @@ func (sm *SessionManager) StorePendingOTP(phone string, otpReq *gm.OtpRequest, a
 		IsReauth:  isReauth,
 	}
 	sm.mu.Unlock()
+}
+
+// PeekPendingOTP returns a pending OTP request without removing it.
+// Used to check if we can reuse an existing HermesAuth.
+func (sm *SessionManager) PeekPendingOTP(phone string) *PendingOTP {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	pending := sm.pendingOTP[phone]
+	if pending != nil && time.Since(pending.CreatedAt) > 5*time.Minute {
+		return nil // expired
+	}
+	return pending
 }
 
 // GetPendingOTP returns and removes a pending OTP request.
