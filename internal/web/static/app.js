@@ -358,6 +358,14 @@ function hideAccountMenu() {
     document.getElementById('account-modal').classList.add('hidden');
 }
 
+function showNotificationMenu() {
+    document.getElementById('notification-modal').classList.remove('hidden');
+}
+
+function hideNotificationMenu() {
+    document.getElementById('notification-modal').classList.add('hidden');
+}
+
 function showLogoutAllConfirm() {
     document.getElementById('logout-all-confirm').classList.remove('hidden');
 }
@@ -2234,8 +2242,7 @@ function openNtfySubscribe() {
     }
 
     // iOS / desktop: show topic info with copy button
-    var modal = document.getElementById('account-modal');
-    if (modal) modal.classList.add('hidden');
+    hideNotificationMenu();
 
     var server = ntfyInfo.server === 'https://ntfy.sh' ? '' : ntfyInfo.server;
     var instructions = server
