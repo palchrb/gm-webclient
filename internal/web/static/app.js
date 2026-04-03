@@ -744,46 +744,62 @@ async function reloadCurrentConversation(delayMs) {
     }
 }
 
-// Lightweight catch-up: fetch messages from server, append only new ones.
-// No full renderMessages() — prevents scroll jitter on tab focus.
+// Lightweight catch-up: fetch only messages newer than what we have cached.
 async function catchUpConversation(convId) {
     if (!convId) return;
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=200`);
-        if (state.currentConversationId !== convId) return; // user navigated away
-        const serverMsgs = (resp.messages || []).sort(
+        // Find the newest real (non-optimistic) message ID to use as cursor
+        var newerParam = '';
+        for (var i = state.messages.length - 1; i >= 0; i--) {
+            if (!state.messages[i].messageId.startsWith('sending-')) {
+                newerParam = '&newerThanId=' + state.messages[i].messageId;
+                break;
+            }
+        }
+
+        const resp = await api('/api/conversations/' + convId + '?limit=200' + newerParam);
+        if (state.currentConversationId !== convId) return;
+        const newMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
+
+        if (newMsgs.length === 0) return;
+
         const existingIds = new Set(state.messages.map(m => m.messageId));
         let added = false;
-        for (const msg of serverMsgs) {
-            if (existingIds.has(msg.messageId)) continue;
+        for (const msg of newMsgs) {
+            if (existingIds.has(msg.messageId)) {
+                // Update existing message (e.g. media arrived)
+                var existing = state.messages.find(m => m.messageId === msg.messageId);
+                if (existing) {
+                    var hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
+                    var hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
+                    if (hasMedia && !hadMedia) {
+                        Object.assign(existing, msg);
+                        delete existing._sendState;
+                        delete existing._errorMsg;
+                        rebuildMessageDOM(msg.messageId);
+                    } else if (existing._sendState) {
+                        delete existing._sendState;
+                        delete existing._errorMsg;
+                        var el = document.querySelector('[data-msgid="' + msg.messageId + '"]');
+                        if (el) el.classList.remove('message-sending');
+                    }
+                }
+                continue;
+            }
             state.messages.push(msg);
             if (!isReactionMessage(msg)) {
                 appendMessageToDOM(msg);
                 added = true;
             }
         }
-        // Update existing messages that gained media or other server-side fields
-        for (const msg of serverMsgs) {
-            if (!existingIds.has(msg.messageId)) continue;
-            const existing = state.messages.find(m => m.messageId === msg.messageId);
-            if (!existing) continue;
-            const hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
-            const hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
-            if (hasMedia && !hadMedia) {
-                Object.assign(existing, msg);
-                delete existing._sendState;
-                delete existing._errorMsg;
-                rebuildMessageDOM(msg.messageId);
-            } else if (existing._sendState) {
-                // Clear stale send state for confirmed messages
-                delete existing._sendState;
-                delete existing._errorMsg;
-                const el = document.querySelector(`[data-msgid="${msg.messageId}"]`);
-                if (el) el.classList.remove('message-sending');
-            }
-        }
+
+        // Sort to fix any ordering issues from live appends
+        state.messages.sort(function(a, b) {
+            return new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0);
+        });
+
         cache.set('msgs_' + convId, state.messages);
         if (added) scrollToBottom();
 
