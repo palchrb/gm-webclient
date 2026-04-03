@@ -153,7 +153,7 @@ func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 			Subscriber:      "mailto:garmin-web@localhost",
 			VAPIDPublicKey:  srv.vapidKeys.PublicKey,
 			VAPIDPrivateKey: srv.vapidKeys.PrivateKey,
-			TTL:             120,
+			TTL:             86400,
 			Urgency:         webpush.UrgencyHigh,
 		})
 		if err != nil {
