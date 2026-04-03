@@ -20,6 +20,7 @@ type Server struct {
 	pushStore      *PushSubscriptionStore
 	passkeyStore   *PasskeyStore          // nil when dataDir is empty
 	webAuthn       *webauthn.WebAuthn     // nil when ORIGIN is not set
+	ntfyConfig     *NtfyConfig            // nil when NTFY_URL is not set
 	pushAlways     bool                   // send web push even when browser tabs are open
 	logger         *slog.Logger
 	mux            *http.ServeMux
@@ -56,6 +57,13 @@ func WithSessionDays(days int) ServerOption {
 func WithPushAlways(always bool) ServerOption {
 	return func(s *Server) {
 		s.pushAlways = always
+	}
+}
+
+// WithNtfyConfig enables ntfy.sh push notification forwarding.
+func WithNtfyConfig(cfg *NtfyConfig) ServerOption {
+	return func(s *Server) {
+		s.ntfyConfig = cfg
 	}
 }
 
@@ -125,7 +133,10 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 
 // wirePushCallback sets the correct push callback on an account's SSE broker.
 func (s *Server) wirePushCallback(acct *UserAccount) {
-	pushFn := func(event SSEEvent) { s.sendWebPush(acct, event) }
+	pushFn := func(event SSEEvent) {
+		s.sendWebPush(acct, event)
+		s.sendNtfy(acct, event)
+	}
 	if s.pushAlways {
 		acct.SSE.OnEveryPublish(pushFn)
 	} else {
@@ -199,6 +210,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/push/vapid-key", s.handleGetVAPIDKey)
 	s.mux.HandleFunc("POST /api/push/subscribe", s.requireSession(s.handlePushSubscribe))
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.requireSession(s.handlePushUnsubscribe))
+
+	// ntfy push notification endpoints
+	s.mux.HandleFunc("GET /api/ntfy/info", s.requireSession(s.handleGetNtfyInfo))
 
 	// SSE events (session required)
 	s.mux.HandleFunc("GET /api/events", s.requireSession(s.handleSSE))

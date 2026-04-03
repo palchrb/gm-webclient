@@ -1,0 +1,142 @@
+package web
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
+)
+
+// NtfyConfig holds ntfy.sh integration settings.
+type NtfyConfig struct {
+	BaseURL  string // e.g. "https://ntfy.sh" or self-hosted URL
+	HMACKey  []byte // secret for deriving per-phone topics
+	ClickURL string // optional: URL opened when user taps the notification
+}
+
+// LoadOrGenerateNtfyHMACKey reads or creates a 32-byte HMAC key for ntfy topic derivation.
+func LoadOrGenerateNtfyHMACKey(dataDir string) ([]byte, error) {
+	path := filepath.Join(dataDir, "ntfy_hmac_key")
+
+	data, err := os.ReadFile(path)
+	if err == nil && len(data) >= 32 {
+		return data[:32], nil
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generating ntfy HMAC key: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating directory for ntfy HMAC key: %w", err)
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		return nil, fmt.Errorf("saving ntfy HMAC key: %w", err)
+	}
+
+	return key, nil
+}
+
+// NtfyTopicForPhone derives a deterministic, unguessable ntfy topic from a phone number.
+func NtfyTopicForPhone(hmacKey []byte, phone string) string {
+	mac := hmac.New(sha256.New, hmacKey)
+	mac.Write([]byte(phone))
+	return "gm-" + hex.EncodeToString(mac.Sum(nil))[:24]
+}
+
+// sendNtfy sends a push notification to ntfy for the given account.
+func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
+	if srv.ntfyConfig == nil {
+		return
+	}
+	if event.Type != "message" {
+		return
+	}
+
+	payload := buildPushPayload(event.Data, acct.Phone)
+	if payload == nil {
+		return
+	}
+
+	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, acct.Phone)
+
+	ntfyPayload := map[string]any{
+		"topic":    topic,
+		"title":    payload["title"],
+		"message":  payload["body"],
+		"priority": 4,
+		"tags":     []string{"speech_balloon"},
+	}
+	if srv.ntfyConfig.ClickURL != "" {
+		ntfyPayload["click"] = srv.ntfyConfig.ClickURL
+	}
+
+	body, err := json.Marshal(ntfyPayload)
+	if err != nil {
+		srv.logger.Error("Failed to marshal ntfy payload", "error", err)
+		return
+	}
+
+	url := strings.TrimRight(srv.ntfyConfig.BaseURL, "/")
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(body)))
+	if err != nil {
+		srv.logger.Error("Failed to create ntfy request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		srv.logger.Error("Failed to send ntfy notification", "phone", acct.Phone, "error", err)
+		return
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == 429 {
+		srv.logger.Warn("ntfy rate limited", "phone", acct.Phone)
+		return
+	}
+	if resp.StatusCode >= 400 {
+		srv.logger.Error("ntfy returned error", "phone", acct.Phone, "status", resp.StatusCode)
+		return
+	}
+
+	srv.logger.Debug("ntfy notification sent", "phone", acct.Phone, "topic", topic)
+}
+
+// handleGetNtfyInfo returns ntfy configuration for the authenticated user.
+func (srv *Server) handleGetNtfyInfo(w http.ResponseWriter, r *http.Request) {
+	if srv.ntfyConfig == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+
+	session := getSession(r.Context())
+	if session == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	phone := session.Phone()
+	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, phone)
+	subscribeURL := strings.TrimRight(srv.ntfyConfig.BaseURL, "/") + "/" + topic
+	userID := gm.PhoneToHermesUserID(phone)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":      true,
+		"topic":        topic,
+		"subscribeUrl": subscribeURL,
+		"userId":       userID,
+	})
+}
