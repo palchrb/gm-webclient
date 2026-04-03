@@ -152,6 +152,13 @@ async function confirmOTP() {
     }
 }
 
+function skipPasskeySetup() {
+    if (state._pendingLogin) {
+        enterChat(state._pendingLogin);
+        delete state._pendingLogin;
+    }
+}
+
 // ─── Passkey (WebAuthn) ─────────────────────────────────────────────────────
 
 function bufferToBase64url(buf) {
@@ -276,11 +283,12 @@ async function passkeyLogin(phone) {
             document.getElementById('phone-step').classList.remove('hidden');
             return;
         }
-        // Passkey failed — offer OTP fallback
+        // Passkey failed — offer OTP fallback with clear message
         hideAllLoginSteps();
         // Auto-trigger OTP for convenience
         try {
             await api('/api/auth/request-otp', { method: 'POST', body: { phone, forceOTP: true } });
+            showError('Passkey failed — enter the code sent to your phone instead.');
             document.getElementById('otp-step').classList.remove('hidden');
             document.getElementById('otp-phone').textContent = phone;
             document.getElementById('otp-input').focus();
