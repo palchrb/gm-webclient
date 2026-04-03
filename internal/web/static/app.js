@@ -358,6 +358,14 @@ function hideAccountMenu() {
     document.getElementById('account-modal').classList.add('hidden');
 }
 
+function showNotificationMenu() {
+    document.getElementById('notification-modal').classList.remove('hidden');
+}
+
+function hideNotificationMenu() {
+    document.getElementById('notification-modal').classList.add('hidden');
+}
+
 function showLogoutAllConfirm() {
     document.getElementById('logout-all-confirm').classList.remove('hidden');
 }
@@ -2205,17 +2213,15 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 // ─── ntfy Push Notifications ─────────────────────────────────────────────────
-var ntfyAppUrl = '';
-var ntfyWebUrl = '';
+var ntfyInfo = null;
 
 async function setupNtfyButton() {
     try {
         var resp = await api('/api/ntfy/info');
         var btn = document.getElementById('ntfy-btn');
         if (!btn) return;
-        if (resp.enabled && resp.appUrl) {
-            ntfyAppUrl = resp.appUrl;
-            ntfyWebUrl = resp.subscribeUrl;
+        if (resp.enabled && resp.topic) {
+            ntfyInfo = resp;
             btn.classList.remove('hidden');
         } else {
             btn.classList.add('hidden');
@@ -2226,14 +2232,46 @@ async function setupNtfyButton() {
 }
 
 function openNtfySubscribe() {
-    if (!ntfyAppUrl) return;
-    // Try ntfy:// deep link first (opens iOS/Android app).
-    // Fall back to web URL after a short delay if the app didn't handle it.
-    window.location.href = ntfyAppUrl;
-    setTimeout(function() {
-        // If still here, app didn't open — fall back to web
-        window.open(ntfyWebUrl, '_blank');
-    }, 1500);
+    if (!ntfyInfo) return;
+
+    // Android: use ntfy:// deep link to open app directly
+    var ua = navigator.userAgent || '';
+    if (/android/i.test(ua) && ntfyInfo.appUrl) {
+        window.location.href = ntfyInfo.appUrl;
+        return;
+    }
+
+    // iOS / desktop: show topic info with copy button
+    hideNotificationMenu();
+
+    var server = ntfyInfo.server === 'https://ntfy.sh' ? '' : ntfyInfo.server;
+    var instructions = server
+        ? 'Open the ntfy app, tap +, set server to <b>' + server + '</b> and paste the topic below.'
+        : 'Open the ntfy app, tap + and paste the topic below.';
+
+    var overlay = document.createElement('div');
+    overlay.className = 'modal';
+    overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML =
+        '<div class="modal-content">' +
+            '<h3>Subscribe via ntfy</h3>' +
+            '<p style="font-size:0.9em;margin-bottom:12px">' + instructions + '</p>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+                '<input type="text" readonly value="' + ntfyInfo.topic + '" style="flex:1;font-family:monospace;font-size:0.95em" id="ntfy-topic-input">' +
+                '<button class="btn-primary" onclick="copyNtfyTopic()">Copy</button>' +
+            '</div>' +
+            '<p id="ntfy-copied" class="hidden" style="color:var(--accent);font-size:0.85em;margin-top:6px">Copied!</p>' +
+        '</div>';
+    document.body.appendChild(overlay);
+}
+
+function copyNtfyTopic() {
+    var input = document.getElementById('ntfy-topic-input');
+    if (!input) return;
+    navigator.clipboard.writeText(input.value).then(function() {
+        var msg = document.getElementById('ntfy-copied');
+        if (msg) msg.classList.remove('hidden');
+    });
 }
 
 // ─── Start ───────────────────────────────────────────────────────────────────

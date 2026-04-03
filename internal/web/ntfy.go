@@ -131,19 +131,17 @@ func (srv *Server) handleGetNtfyInfo(w http.ResponseWriter, r *http.Request) {
 	phone := session.Phone()
 	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, phone)
 	baseURL := strings.TrimRight(srv.ntfyConfig.BaseURL, "/")
-	subscribeURL := baseURL + "/" + topic
-
-	// Build ntfy:// deep link for mobile apps (ntfy://host/topic)
-	appURL := strings.Replace(subscribeURL, "https://", "ntfy://", 1)
-	appURL = strings.Replace(appURL, "http://", "ntfy://", 1)
-
 	userID := gm.PhoneToHermesUserID(phone)
 
+	// Build ntfy:// deep link for Android app (not supported on iOS)
+	host := strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://")
+	appURL := "ntfy://" + host + "/" + topic + "?display=Garmin+Messenger"
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":      true,
-		"topic":        topic,
-		"subscribeUrl": subscribeURL,
-		"appUrl":       appURL,
-		"userId":       userID,
+		"enabled": true,
+		"topic":   topic,
+		"server":  baseURL,
+		"appUrl":  appURL,
+		"userId":  userID,
 	})
 }

@@ -60,7 +60,7 @@
             <h1>Garmin Messenger</h1>
             <div class="header-right">
                 <span id="user-phone" class="user-phone"></span>
-                <button class="header-btn" onclick="requestNotificationPermission()" title="Enable notifications">&#128276;</button>
+                <button class="header-btn" onclick="showNotificationMenu()" title="Enable notifications">&#128276;</button>
                 <button class="header-btn" onclick="showAccountMenu()" title="Account">&#9881;</button>
             </div>
         </header>
@@ -128,9 +128,6 @@
         <div class="modal-content">
             <h3>Account</h3>
             <div class="account-menu">
-                <button id="ntfy-btn" class="account-menu-btn hidden" onclick="openNtfySubscribe()">
-                    &#128276; Subscribe via ntfy
-                </button>
                 <button class="account-menu-btn" onclick="addPasskey()">
                     &#128273; Register new passkey
                 </button>
@@ -150,6 +147,21 @@
                         <button class="btn-primary" style="background:#e53e3e" onclick="logoutAll()">Confirm</button>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Menu Modal -->
+    <div id="notification-modal" class="modal hidden" onclick="if(event.target===this)hideNotificationMenu()">
+        <div class="modal-content">
+            <h3>Notifications</h3>
+            <div class="account-menu">
+                <button class="account-menu-btn" onclick="hideNotificationMenu();requestNotificationPermission()">
+                    &#127760; Web Push (this browser)
+                </button>
+                <button id="ntfy-btn" class="account-menu-btn hidden" onclick="openNtfySubscribe()">
+                    &#128276; Subscribe via ntfy
+                </button>
             </div>
         </div>
     </div>
