@@ -744,64 +744,64 @@ async function reloadCurrentConversation(delayMs) {
     }
 }
 
-// Lightweight catch-up: fetch messages from server, append only new ones.
-// No full renderMessages() — prevents scroll jitter on tab focus.
+// Lightweight catch-up: fetch only messages newer than what we have cached.
 async function catchUpConversation(convId) {
     if (!convId) return;
     try {
-        const resp = await api(`/api/conversations/${convId}?limit=200`);
-        if (state.currentConversationId !== convId) return; // user navigated away
-        const serverMsgs = (resp.messages || []).sort(
+        // Find the newest real (non-optimistic) message ID to use as cursor
+        var newerParam = '';
+        for (var i = state.messages.length - 1; i >= 0; i--) {
+            if (!state.messages[i].messageId.startsWith('sending-')) {
+                newerParam = '&newerThanId=' + state.messages[i].messageId;
+                break;
+            }
+        }
+
+        const resp = await api('/api/conversations/' + convId + '?limit=200' + newerParam);
+        if (state.currentConversationId !== convId) return;
+        const newMsgs = (resp.messages || []).sort(
             (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
         );
-        // Check if cached order differs from server order
-        const existingMap = {};
-        for (const m of state.messages) existingMap[m.messageId] = m;
-        const cachedOrder = state.messages.filter(m => !m.messageId.startsWith('sending-')).map(m => m.messageId);
-        const serverOrder = serverMsgs.map(m => m.messageId);
-        const sharedCached = cachedOrder.filter(id => serverOrder.includes(id));
-        const sharedServer = serverOrder.filter(id => cachedOrder.includes(id));
-        var needsRerender = sharedCached.join(',') !== sharedServer.join(',');
 
+        if (newMsgs.length === 0) return;
+
+        const existingIds = new Set(state.messages.map(m => m.messageId));
         let added = false;
-        for (const msg of serverMsgs) {
-            const existing = existingMap[msg.messageId];
-            if (!existing) {
-                state.messages.push(msg);
-                if (!needsRerender && !isReactionMessage(msg)) {
-                    appendMessageToDOM(msg);
+        for (const msg of newMsgs) {
+            if (existingIds.has(msg.messageId)) {
+                // Update existing message (e.g. media arrived)
+                var existing = state.messages.find(m => m.messageId === msg.messageId);
+                if (existing) {
+                    var hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
+                    var hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
+                    if (hasMedia && !hadMedia) {
+                        Object.assign(existing, msg);
+                        delete existing._sendState;
+                        delete existing._errorMsg;
+                        rebuildMessageDOM(msg.messageId);
+                    } else if (existing._sendState) {
+                        delete existing._sendState;
+                        delete existing._errorMsg;
+                        var el = document.querySelector('[data-msgid="' + msg.messageId + '"]');
+                        if (el) el.classList.remove('message-sending');
+                    }
                 }
-                added = true;
                 continue;
             }
-            var hadMedia = existing.mediaId && existing.mediaId !== '00000000-0000-0000-0000-000000000000';
-            var hasMedia = msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000';
-            if (hasMedia && !hadMedia) {
-                Object.assign(existing, msg);
-                delete existing._sendState;
-                delete existing._errorMsg;
-                if (!needsRerender) rebuildMessageDOM(msg.messageId);
-            } else if (existing._sendState) {
-                delete existing._sendState;
-                delete existing._errorMsg;
-                if (!needsRerender) {
-                    var el = document.querySelector('[data-msgid="' + msg.messageId + '"]');
-                    if (el) el.classList.remove('message-sending');
-                }
+            state.messages.push(msg);
+            if (!isReactionMessage(msg)) {
+                appendMessageToDOM(msg);
+                added = true;
             }
         }
 
-        if (needsRerender) {
-            state.messages.sort(function(a, b) {
-                return new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0);
-            });
-            renderMessages();
-            var container = document.getElementById('messages');
-            container.scrollTop = container.scrollHeight;
-        }
+        // Sort to fix any ordering issues from live appends
+        state.messages.sort(function(a, b) {
+            return new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0);
+        });
 
         cache.set('msgs_' + convId, state.messages);
-        if (added && !needsRerender) scrollToBottom();
+        if (added) scrollToBottom();
 
         // Mark last message as read
         if (state.messages.length > 0) {
