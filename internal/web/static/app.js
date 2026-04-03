@@ -930,17 +930,12 @@ async function sendMediaFile(file, caption) {
         const resp = await fetch('/api/media/send', { method: 'POST', body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        // Swap temp ID for real ID.
+        // Swap temp ID for real ID and flag that this message needs media.
+        // When the SSE status update confirms "Sent", handleStatusUpdate()
+        // will fetch the full message (with mediaId) and rebuild the DOM.
         replaceOptimisticMessage(convId, tempId, data.messageId, 'sent');
-        // SSE may or may not echo the message back with media fields.
-        // Catch up after a short delay so the server has time to propagate
-        // the media attachment — this fills in mediaId/mediaType and
-        // rebuildMessageDOM() renders the actual image or waveform player.
-        setTimeout(() => {
-            if (state.currentConversationId === convId) {
-                catchUpConversation(convId);
-            }
-        }, 2000);
+        const msg = state.messages.find(m => m.messageId === data.messageId);
+        if (msg) msg._needsMedia = true;
     } catch (e) {
         console.error('Failed to send media:', e);
         markOptimisticFailed(tempId, e.message || 'Failed to send media');
@@ -1183,6 +1178,7 @@ function handleIncomingMessage(msg) {
             Object.assign(existing, msg);
             delete existing._sendState;
             delete existing._errorMsg;
+            delete existing._needsMedia;
             if (!hadMedia && existing.mediaId) {
                 rebuildMessageDOM(existing.messageId);
             }
@@ -1229,6 +1225,17 @@ function handleStatusUpdate(update) {
             msg.status.push({ userId: update.userId || '', messageStatus: update.messageStatus });
         }
         updateMessageStatus(msgId); // surgical DOM update — no re-render
+
+        // When Garmin confirms a media message as Sent, the media attachment
+        // is now available on the server. Fetch the full message to get
+        // mediaId/mediaType and rebuild the DOM to show the actual image
+        // or waveform player.
+        if (msg._needsMedia && (update.messageStatus === 'Sent' || update.messageStatus === 'Delivered')) {
+            delete msg._needsMedia;
+            if (state.currentConversationId) {
+                catchUpConversation(state.currentConversationId);
+            }
+        }
     }
 }
 
