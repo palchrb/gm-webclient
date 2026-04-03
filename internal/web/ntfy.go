@@ -130,13 +130,20 @@ func (srv *Server) handleGetNtfyInfo(w http.ResponseWriter, r *http.Request) {
 
 	phone := session.Phone()
 	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, phone)
-	subscribeURL := strings.TrimRight(srv.ntfyConfig.BaseURL, "/") + "/" + topic
+	baseURL := strings.TrimRight(srv.ntfyConfig.BaseURL, "/")
+	subscribeURL := baseURL + "/" + topic
+
+	// Build ntfy:// deep link for mobile apps (ntfy://host/topic)
+	appURL := strings.Replace(subscribeURL, "https://", "ntfy://", 1)
+	appURL = strings.Replace(appURL, "http://", "ntfy://", 1)
+
 	userID := gm.PhoneToHermesUserID(phone)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":      true,
 		"topic":        topic,
 		"subscribeUrl": subscribeURL,
+		"appUrl":       appURL,
 		"userId":       userID,
 	})
 }

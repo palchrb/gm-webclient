@@ -2205,15 +2205,17 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 // ─── ntfy Push Notifications ─────────────────────────────────────────────────
-var ntfySubscribeUrl = '';
+var ntfyAppUrl = '';
+var ntfyWebUrl = '';
 
 async function setupNtfyButton() {
     try {
         var resp = await api('/api/ntfy/info');
         var btn = document.getElementById('ntfy-btn');
         if (!btn) return;
-        if (resp.enabled && resp.subscribeUrl) {
-            ntfySubscribeUrl = resp.subscribeUrl;
+        if (resp.enabled && resp.appUrl) {
+            ntfyAppUrl = resp.appUrl;
+            ntfyWebUrl = resp.subscribeUrl;
             btn.classList.remove('hidden');
         } else {
             btn.classList.add('hidden');
@@ -2224,8 +2226,14 @@ async function setupNtfyButton() {
 }
 
 function openNtfySubscribe() {
-    if (!ntfySubscribeUrl) return;
-    window.open(ntfySubscribeUrl, '_blank');
+    if (!ntfyAppUrl) return;
+    // Try ntfy:// deep link first (opens iOS/Android app).
+    // Fall back to web URL after a short delay if the app didn't handle it.
+    window.location.href = ntfyAppUrl;
+    setTimeout(function() {
+        // If still here, app didn't open — fall back to web
+        window.open(ntfyWebUrl, '_blank');
+    }, 1500);
 }
 
 // ─── Start ───────────────────────────────────────────────────────────────────
