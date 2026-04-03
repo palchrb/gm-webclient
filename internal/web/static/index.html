@@ -23,6 +23,12 @@
                 <button id="login-btn" onclick="startLogin()">Log in</button>
             </div>
 
+            <div id="passkey-login-step" class="hidden">
+                <p class="otp-info">Sign in with passkey</p>
+                <button onclick="doPasskeyLogin()">Use passkey</button>
+                <button onclick="requestOTPInstead()" style="background:transparent;color:var(--text-secondary);font-size:0.85em;margin-top:8px">Use OTP instead</button>
+            </div>
+
             <div id="otp-step" class="hidden">
                 <p class="otp-info">Code sent to <span id="otp-phone"></span></p>
                 <input type="text" id="otp-input" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
