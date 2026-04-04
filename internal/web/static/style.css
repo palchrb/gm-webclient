@@ -392,8 +392,12 @@ body {
     padding: 16px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end; /* push messages to bottom when list is short */
+    justify-content: space-between; /* push messages to bottom when list is short */
     gap: 4px;
+}
+
+.timeline-spacer {
+    flex: 1;
 }
 
 .message-group {
