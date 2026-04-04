@@ -11,8 +11,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
-
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
@@ -110,16 +108,7 @@ func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 
 // handleProxyMedia proxies a media download from Garmin to the browser.
 // This avoids CORS issues with Garmin's S3 signed URLs.
-// In-memory media cache to avoid repeated Garmin S3 downloads.
-// Keyed by mediaId. Entries are small (AVIF images ~50-200KB).
-var mediaCache sync.Map // map[string]mediaCacheEntry
-var mediaInflight sync.Map // map[string]chan struct{} — dedup concurrent fetches
-
-type mediaCacheEntry struct {
-	data      []byte
-	mediaType gm.MediaType
-}
-
+// No server-side cache — browser caches via Cache-Control: max-age=86400.
 func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 	session := getSession(r.Context())
 
@@ -144,41 +133,12 @@ func (s *Server) handleProxyMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mediaType := gm.MediaType(r.URL.Query().Get("mediaType"))
-	cacheKey := mediaID.String()
-
-	// Check server-side cache first (avoids repeated Garmin S3 downloads)
-	if cached, ok := mediaCache.Load(cacheKey); ok {
-		entry := cached.(mediaCacheEntry)
-		serveMedia(w, entry.data, entry.mediaType)
-		return
-	}
-
-	// Deduplicate concurrent requests for the same media
-	ch := make(chan struct{})
-	if existing, loaded := mediaInflight.LoadOrStore(cacheKey, ch); loaded {
-		// Another request is already fetching this — wait for it
-		<-existing.(chan struct{})
-		if cached, ok := mediaCache.Load(cacheKey); ok {
-			entry := cached.(mediaCacheEntry)
-			serveMedia(w, entry.data, entry.mediaType)
-			return
-		}
-		// Fetch failed — fall through to try ourselves
-	}
 
 	data, err := session.Account.API.DownloadMedia(r.Context(), msgUUID, mediaID, messageID, conversationID, mediaType)
-
-	// Signal waiters and clean up
-	mediaInflight.Delete(cacheKey)
-	close(ch)
-
 	if err != nil {
 		handleAPIError(w, err, "download media")
 		return
 	}
-
-	// Cache for subsequent requests
-	mediaCache.Store(cacheKey, mediaCacheEntry{data: data, mediaType: mediaType})
 
 	serveMedia(w, data, mediaType)
 }
