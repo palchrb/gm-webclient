@@ -547,9 +547,7 @@ async function selectConversation(convId) {
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
-        // Synchronous scroll to avoid the 2-frame flicker from rAF-based scroll
-        const container = document.getElementById('messages');
-        container.scrollTop = container.scrollHeight;
+        startScrollPin();
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -566,8 +564,7 @@ async function selectConversation(convId) {
             );
             cache.set('msgs_' + convId, state.messages);
             renderMessages();
-            const container = document.getElementById('messages');
-            container.scrollTop = container.scrollHeight;
+            startScrollPin();
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -584,6 +581,7 @@ async function selectConversation(convId) {
 }
 
 function deselectConversation() {
+    stopScrollPin();
     state.currentConversationId = null;
     document.getElementById('no-conversation').classList.remove('hidden');
     document.getElementById('conversation-view').classList.add('hidden');
@@ -2053,6 +2051,47 @@ function scrollToBottomForce() {
     scrollToBottom(true);
 }
 
+// --- Scroll-pin: keep scroll at bottom while media loads after opening a conversation ---
+var _scrollPinObserver = null;
+
+function startScrollPin() {
+    stopScrollPin();
+    var container = document.getElementById('messages');
+    if (!container) return;
+
+    container.scrollTop = container.scrollHeight;
+
+    // Watch for height changes (images/audio loading) and keep pinned to bottom
+    _scrollPinObserver = new ResizeObserver(function() {
+        container.scrollTop = container.scrollHeight;
+    });
+    _scrollPinObserver.observe(container);
+
+    // Stop pinning as soon as user scrolls up
+    container.addEventListener('scroll', _onScrollPinCheck);
+}
+
+function _onScrollPinCheck() {
+    var container = document.getElementById('messages');
+    if (!container || !_scrollPinObserver) return;
+    var distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    // If user scrolled away from bottom, they want to read history — stop pinning
+    if (distFromBottom > 200) {
+        stopScrollPin();
+    }
+}
+
+function stopScrollPin() {
+    if (_scrollPinObserver) {
+        _scrollPinObserver.disconnect();
+        _scrollPinObserver = null;
+    }
+    var container = document.getElementById('messages');
+    if (container) {
+        container.removeEventListener('scroll', _onScrollPinCheck);
+    }
+}
+
 function showChatView() {
     document.getElementById('login-view').classList.add('hidden');
     document.getElementById('chat-view').classList.remove('hidden');
@@ -2300,11 +2339,25 @@ async function setupNtfyButton() {
         if (resp.enabled && resp.topic) {
             ntfyInfo = resp;
             btn.classList.remove('hidden');
+            // Update button text based on subscription status
+            btn.textContent = resp.subscribed ? '🔔 ntfy (on)' : '🔕 ntfy';
         } else {
             btn.classList.add('hidden');
         }
     } catch (e) {
         console.log('ntfy setup check failed:', e.message);
+    }
+}
+
+async function enableNtfyOnServer() {
+    if (ntfyInfo && ntfyInfo.subscribed) return;
+    try {
+        await api('/api/ntfy/subscribe', { method: 'POST', body: JSON.stringify({ enabled: true }) });
+        if (ntfyInfo) ntfyInfo.subscribed = true;
+        var btn = document.getElementById('ntfy-btn');
+        if (btn) btn.textContent = '🔔 ntfy (on)';
+    } catch (e) {
+        console.error('Failed to enable ntfy:', e);
     }
 }
 
@@ -2314,6 +2367,9 @@ function openNtfySubscribe() {
     var ua = navigator.userAgent || '';
     var isAndroid = /android/i.test(ua);
     var isIOS = /iP(hone|ad|od)/i.test(ua);
+
+    // Enable server-side ntfy push when user subscribes
+    enableNtfyOnServer();
 
     // Android: use ntfy:// deep link to open app directly
     if (isAndroid && ntfyInfo.appUrl) {

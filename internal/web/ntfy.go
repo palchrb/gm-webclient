@@ -60,6 +60,9 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 	if srv.ntfyConfig == nil {
 		return
 	}
+	if !acct.NtfyEnabled {
+		return
+	}
 	if event.Type != "message" {
 		return
 	}
@@ -148,10 +151,36 @@ func (srv *Server) handleGetNtfyInfo(w http.ResponseWriter, r *http.Request) {
 	appURL := "ntfy://" + host + "/" + topic + "?display=Garmin+Messenger"
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": true,
-		"topic":   topic,
-		"server":  baseURL,
-		"appUrl":  appURL,
-		"userId":  userID,
+		"enabled":   true,
+		"subscribed": session.Account.NtfyEnabled,
+		"topic":     topic,
+		"server":    baseURL,
+		"appUrl":    appURL,
+		"userId":    userID,
 	})
+}
+
+// handleNtfySubscribe toggles ntfy push notifications for the authenticated user.
+func (srv *Server) handleNtfySubscribe(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+	if session == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+
+	session.Account.NtfyEnabled = req.Enabled
+
+	// Persist change
+	srv.PersistSessions()
+
+	srv.logger.Info("ntfy subscription changed", "phone", session.Phone(), "enabled", req.Enabled)
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
 }

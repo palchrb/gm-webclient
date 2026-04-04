@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -53,8 +54,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to load/generate VAPID keys: %v", err)
 		}
-		log.Printf("Web Push enabled (VAPID public key: %s...)", vapidKeys.PublicKey[:20])
-		log.Printf("FCM push enabled, data dir: %s", *dataDir)
+		fmt.Fprintf(os.Stderr, "Web Push enabled (VAPID public key: %s...)\n", vapidKeys.PublicKey[:20])
+		fmt.Fprintf(os.Stderr, "FCM push enabled, data dir: %s\n", *dataDir)
 	}
 
 	var opts []web.ServerOption
@@ -68,7 +69,7 @@ func main() {
 		phones := parsePhoneList(whitelist)
 		if len(phones) > 0 {
 			opts = append(opts, web.WithPhoneWhitelist(phones))
-			log.Printf("Phone whitelist enabled: %v", phones)
+			fmt.Fprintf(os.Stderr, "Phone whitelist enabled: %v\n", phones)
 		}
 	}
 
@@ -81,7 +82,7 @@ func main() {
 	}
 	if days > 0 {
 		opts = append(opts, web.WithSessionDays(days))
-		log.Printf("Session TTL: %d days", days)
+		fmt.Fprintf(os.Stderr, "Session TTL: %d days\n", days)
 	}
 
 	// Passkey (WebAuthn) support from flag or env var
@@ -106,7 +107,7 @@ func main() {
 			ClickURL:    originStr,
 			FullMessage: ntfyFull,
 		}))
-		log.Printf("ntfy push enabled (server: %s)", ntfyURL)
+		fmt.Fprintf(os.Stderr, "ntfy push enabled (server: %s)\n", ntfyURL)
 	}
 
 	// Push always: send web push even when browser tabs are open (default true)
@@ -115,7 +116,7 @@ func main() {
 		pushAlways = envPush == "true" || envPush == "1"
 	}
 	opts = append(opts, web.WithPushAlways(pushAlways))
-	log.Printf("Web Push always-on: %v", pushAlways)
+	fmt.Fprintf(os.Stderr, "Web Push always-on: %v\n", pushAlways)
 
 	// Encrypted session persistence.
 	// If SESSION_KEY is set, use it. Otherwise auto-generate and persist one
@@ -127,12 +128,12 @@ func main() {
 		}
 		if sessionKey != "" {
 			opts = append(opts, web.WithSessionKey(sessionKey))
-			log.Printf("Encrypted session persistence enabled")
+			fmt.Fprintln(os.Stderr, "Encrypted session persistence enabled")
 		}
 	}
 
 	srv := web.NewServer(logger, *dataDir, vapidKeys, opts...)
-	log.Printf("Garmin Messenger Web listening on %s", *addr)
+	fmt.Fprintf(os.Stderr, "Garmin Messenger Web listening on %s\n", *addr)
 	if err := srv.ListenAndServe(*addr); err != nil {
 		log.Fatal(err)
 	}
@@ -151,21 +152,21 @@ func loadOrGenerateSessionKey(dataDir string) string {
 	// Generate a random 32-byte key
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
-		log.Printf("Warning: could not generate session key: %v", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not generate session key: %v\n", err)
 		return ""
 	}
 	key := hex.EncodeToString(keyBytes)
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Printf("Warning: could not create data dir for session key: %v", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not create data dir for session key: %v\n", err)
 		return ""
 	}
 	if err := os.WriteFile(keyPath, []byte(key), 0o600); err != nil {
-		log.Printf("Warning: could not save session key: %v", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not save session key: %v\n", err)
 		return ""
 	}
 
-	log.Printf("Generated new session encryption key in %s", keyPath)
+	fmt.Fprintf(os.Stderr, "Generated new session encryption key in %s\n", keyPath)
 	return key
 }
 
