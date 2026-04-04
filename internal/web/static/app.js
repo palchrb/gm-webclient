@@ -1394,9 +1394,15 @@ function isReactionMessage(msg) {
 
 function extractReaction(msg) {
     const body = msg.messageBody || '';
-    const match = body.match(/^\u200b(.+?)\u200b to \u200a(.*?)\u200a$/);
+    // Garmin iOS uses localized connectors: "to" (English), "til" (Norwegian), etc.
+    // and may wrap target text in guillemets «...».
+    // Format: \u200b{emoji}\u200b {word} \u200a{text}\u200a
+    // or:     \u200b{emoji}\u200b {word} «\u200a{text}\u200a»
+    var match = body.match(/^\u200b(.+?)\u200b \S+ [«]?\u200a(.*?)\u200a[»]?$/);
     if (!match) return null;
-    return { emoji: match[1], targetText: match[2] };
+    // Strip trailing ellipsis from truncated target text
+    var targetText = match[2].replace(/\u2026$/, '').replace(/\.\.\.$/,'');
+    return { emoji: match[1], targetText: targetText };
 }
 
 // Find the target message for a reaction by matching body text,
@@ -1409,7 +1415,9 @@ function findReactionTarget(r, reactionMsg) {
         if (candidate.messageId === reactionMsg.messageId) continue;
         if (isReactionMessage(candidate)) continue;
         const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-        if (candidateBody !== r.targetText) continue;
+        // Exact match, or startsWith for truncated reactions from iOS
+        if (candidateBody !== r.targetText && !candidateBody.startsWith(r.targetText)) continue;
+        if (!r.targetText) continue; // don't match empty
         const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
         const diff = Math.abs(reactionTime - candidateTime);
         if (diff < bestTimeDiff) {
@@ -1910,7 +1918,8 @@ function collectReactionsForMessage(targetMsg) {
     for (const msg of state.messages) {
         if (!isReactionMessage(msg)) continue;
         const r = extractReaction(msg);
-        if (!r || r.targetText !== targetBody) continue;
+        if (!r || !r.targetText) continue;
+        if (r.targetText !== targetBody && !targetBody.startsWith(r.targetText)) continue;
         results.push({ emoji: r.emoji, from: msg.from, isMine: isMine(msg) });
     }
     return results;
