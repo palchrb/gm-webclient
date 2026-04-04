@@ -544,10 +544,11 @@ async function selectConversation(convId) {
 
     // Show cached messages immediately — no network wait.
     const cachedMsgs = cache.get('msgs_' + convId);
+    const container = document.getElementById('messages');
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
-        startScrollPin();
+        container.scrollTop = container.scrollHeight;
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -564,7 +565,7 @@ async function selectConversation(convId) {
             );
             cache.set('msgs_' + convId, state.messages);
             renderMessages();
-            startScrollPin();
+            container.scrollTop = container.scrollHeight;
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -581,7 +582,6 @@ async function selectConversation(convId) {
 }
 
 function deselectConversation() {
-    stopScrollPin();
     state.currentConversationId = null;
     document.getElementById('no-conversation').classList.remove('hidden');
     document.getElementById('conversation-view').classList.add('hidden');
@@ -1650,30 +1650,45 @@ const mediaUrlCache = {};
 // Cache of waveform amplitude data keyed by URL (avoids re-decoding audio)
 const waveformCache = {};
 
+function mediaSizeStyle(msg) {
+    // Pre-calculate container size from metadata to prevent layout shift
+    var meta = msg.mediaMetadata;
+    if (!meta || !meta.width || !meta.height) {
+        // Fallback: reserve a default placeholder size
+        if (msg.mediaType === 'ImageAvif') return 'width:200px;height:150px;';
+        return '';
+    }
+    var w = meta.width, h = meta.height;
+    var maxW = 300, maxH = 300;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
+    return 'width:' + w + 'px;height:' + h + 'px;';
+}
+
 function getMediaHtml(msg, convId) {
     // Skip messages without media or with nil UUID mediaId
     if (!msg.mediaId || msg.mediaId === '00000000-0000-0000-0000-000000000000') return '';
     if (!msg.mediaType) return '';
     const msgId = msg.messageId;
+    const sizeStyle = mediaSizeStyle(msg);
 
     // Check if we already have the URL cached
     const cachedUrl = mediaUrlCache[msgId];
     if (cachedUrl) {
         if (msg.mediaType === 'ImageAvif') {
-            return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
+            return `<div class="message-image-container" style="${sizeStyle}"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
         }
         if (msg.mediaType === 'AudioOgg') {
-            // Audio uses waveform player — render placeholder, loadMediaForMessages will init it
             return `<div class="message-audio" id="media-${msgId}"></div>`;
         }
     }
 
-    // Not cached yet — show placeholder, will be loaded async
+    // Not cached yet — show placeholder with reserved size
     if (msg.mediaType === 'ImageAvif') {
-        return `<div class="message-image-container" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Loading image...</span></div>`;
+        return `<div class="message-image-container" id="media-${msgId}" style="${sizeStyle}background:var(--bg-secondary);"></div>`;
     }
     if (msg.mediaType === 'AudioOgg') {
-        return `<div class="message-audio" id="media-${msgId}"><span style="color:var(--text-muted);font-size:12px">Loading audio...</span></div>`;
+        return `<div class="message-audio" id="media-${msgId}"></div>`;
     }
     return '';
 }
@@ -2051,46 +2066,6 @@ function scrollToBottomForce() {
     scrollToBottom(true);
 }
 
-// --- Scroll-pin: keep scroll at bottom while media loads after opening a conversation ---
-var _scrollPinObserver = null;
-
-function startScrollPin() {
-    stopScrollPin();
-    var container = document.getElementById('messages');
-    if (!container) return;
-
-    container.scrollTop = container.scrollHeight;
-
-    // Watch for height changes (images/audio loading) and keep pinned to bottom
-    _scrollPinObserver = new ResizeObserver(function() {
-        container.scrollTop = container.scrollHeight;
-    });
-    _scrollPinObserver.observe(container);
-
-    // Stop pinning as soon as user scrolls up
-    container.addEventListener('scroll', _onScrollPinCheck);
-}
-
-function _onScrollPinCheck() {
-    var container = document.getElementById('messages');
-    if (!container || !_scrollPinObserver) return;
-    var distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    // If user scrolled away from bottom, they want to read history — stop pinning
-    if (distFromBottom > 200) {
-        stopScrollPin();
-    }
-}
-
-function stopScrollPin() {
-    if (_scrollPinObserver) {
-        _scrollPinObserver.disconnect();
-        _scrollPinObserver = null;
-    }
-    var container = document.getElementById('messages');
-    if (container) {
-        container.removeEventListener('scroll', _onScrollPinCheck);
-    }
-}
 
 function showChatView() {
     document.getElementById('login-view').classList.add('hidden');
