@@ -1665,9 +1665,8 @@ function getMediaHtml(msg, convId) {
             return `<div class="message-image-container"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
         }
         if (msg.mediaType === 'AudioOgg') {
-            // Render inline audio element immediately (like images).
-            // Waveform player will be layered on top by loadMediaForMessages.
-            return `<div class="message-audio" id="media-${msgId}"><audio controls preload="metadata" style="max-width:250px;height:36px"><source src="${escapeHtml(cachedUrl)}" type="audio/ogg"></audio></div>`;
+            // Audio uses waveform player — render placeholder, loadMediaForMessages will init it
+            return `<div class="message-audio" id="media-${msgId}"></div>`;
         }
     }
 
@@ -1703,13 +1702,11 @@ function loadMediaForMessages() {
         if (msg.mediaType === 'ImageAvif') {
             el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
         } else if (msg.mediaType === 'AudioOgg') {
-            // Render basic audio element immediately (always works)
-            el.innerHTML = `<audio controls preload="metadata" style="max-width:250px;height:36px"><source src="${escapeHtml(url)}" type="audio/ogg"></audio>`;
-            // Then upgrade to waveform player async
             try {
                 createWaveformPlayer(el, url);
             } catch (e) {
-                console.error('Waveform creation failed, keeping basic audio player', e);
+                // Fallback to basic audio player if waveform fails
+                el.innerHTML = `<audio controls preload="metadata" style="max-width:250px;height:36px"><source src="${escapeHtml(url)}" type="audio/ogg"></audio>`;
             }
         }
     }
@@ -1732,7 +1729,7 @@ function createWaveformPlayer(container, audioUrl) {
     const timeDisplay = player.querySelector('.waveform-time');
 
     const audio = new Audio();
-    audio.preload = 'metadata';
+    audio.preload = 'none';
     audio.src = audioUrl;
 
     const barCount = 40;
