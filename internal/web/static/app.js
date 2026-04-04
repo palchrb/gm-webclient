@@ -1394,13 +1394,11 @@ function isReactionMessage(msg) {
 
 function extractReaction(msg) {
     const body = msg.messageBody || '';
-    // Garmin iOS uses localized connectors: "to" (English), "til" (Norwegian), etc.
-    // and may wrap target text in guillemets «...».
-    // Format: \u200b{emoji}\u200b {word} \u200a{text}\u200a
-    // or:     \u200b{emoji}\u200b {word} «\u200a{text}\u200a»
-    var match = body.match(/^\u200b(.+?)\u200b \S+ [«]?\u200a(.*?)\u200a[»]?$/);
+    // Match ZWS-delimited emoji and hair-space-delimited target text,
+    // ignoring the localized connector word(s) in between.
+    // Strips optional guillemets «» that iOS may add.
+    var match = body.match(/^\u200b(.+?)\u200b .+[«]?\u200a(.*?)\u200a[»]?$/);
     if (!match) return null;
-    // Strip trailing ellipsis from truncated target text
     var targetText = match[2].replace(/\u2026$/, '').replace(/\.\.\.$/,'');
     return { emoji: match[1], targetText: targetText };
 }
