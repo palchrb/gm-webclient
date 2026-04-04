@@ -388,12 +388,13 @@ body {
 /* ─── Messages ─── */
 .messages {
     flex: 1;
-    overflow-y: auto;
-    overflow-anchor: auto;
+    overflow-y: scroll;
     padding: 16px;
     display: flex;
     flex-direction: column;
+    justify-content: flex-end;
     gap: 4px;
+    min-height: 0;
 }
 
 .message-group {
