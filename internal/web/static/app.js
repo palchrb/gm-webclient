@@ -533,6 +533,7 @@ async function loadMembers(convId) {
 
 async function selectConversation(convId) {
     state.currentConversationId = convId;
+    state.pendingChatPhones = null;
     delete unreadCounts[convId]; // Clear unread badge
     setLastSeen(convId);
     renderConversations(); // Update badge display
@@ -586,6 +587,7 @@ async function selectConversation(convId) {
 
 function deselectConversation() {
     state.currentConversationId = null;
+    state.pendingChatPhones = null;
     document.getElementById('no-conversation').classList.remove('hidden');
     document.getElementById('conversation-view').classList.add('hidden');
     renderConversations();
@@ -623,6 +625,14 @@ async function sendMessage() {
         return;
     }
 
+    // Pending new chat — send first message to create the conversation
+    if (state.pendingChatPhones) {
+        if (!body) return;
+        input.value = '';
+        await sendPendingChatMessage(body);
+        return;
+    }
+
     if (!body || !state.currentConversationId) return;
 
     const to = getRecipientPhones(state.currentConversationId);
@@ -647,6 +657,27 @@ async function sendMessage() {
     } catch (e) {
         console.error('Failed to send message:', e);
         markOptimisticFailed(tempId, e.message || 'Send failed');
+    }
+}
+
+async function sendPendingChatMessage(body) {
+    const phones = state.pendingChatPhones;
+    try {
+        const result = await api('/api/chat/new', {
+            method: 'POST',
+            body: { phone: phones.join(','), body }
+        });
+        state.pendingChatPhones = null;
+        // Reload conversations and open the new one
+        await loadConversations();
+        if (result.conversationId) {
+            selectConversation(result.conversationId);
+        }
+    } catch (e) {
+        console.error('Failed to start new chat:', e);
+        // Show error in the message area
+        const container = document.getElementById('messages');
+        container.innerHTML = `<div class="empty-state" style="color:var(--danger)">Failed to send: ${escapeHtml(e.message || 'Unknown error')}</div>`;
     }
 }
 
@@ -923,32 +954,38 @@ function showNewChatDialog() {
 function hideNewChatDialog() {
     document.getElementById('new-chat-dialog').classList.add('hidden');
     document.getElementById('new-chat-phone').value = '';
-    document.getElementById('new-chat-message').value = '';
     document.getElementById('new-chat-error').classList.add('hidden');
 }
 
-async function startNewChat() {
-    const phone = document.getElementById('new-chat-phone').value.trim();
-    const body = document.getElementById('new-chat-message').value.trim();
-
-    if (!phone || !body) {
-        document.getElementById('new-chat-error').textContent = 'Please enter a phone number and message';
+function openNewChat() {
+    const phoneRaw = document.getElementById('new-chat-phone').value.trim();
+    if (!phoneRaw) {
+        document.getElementById('new-chat-error').textContent = 'Please enter a phone number';
         document.getElementById('new-chat-error').classList.remove('hidden');
         return;
     }
 
-    try {
-        const result = await api('/api/chat/new', { method: 'POST', body: { phone, body } });
-        hideNewChatDialog();
-        // Reload conversations and select the new one
-        await loadConversations();
-        if (result.conversationId) {
-            selectConversation(result.conversationId);
-        }
-    } catch (e) {
-        document.getElementById('new-chat-error').textContent = e.message || 'Could not start conversation';
+    // Parse phone numbers
+    const phones = phoneRaw.split(/[,;]/).map(p => p.trim()).filter(Boolean);
+    if (phones.length === 0) {
+        document.getElementById('new-chat-error').textContent = 'Please enter a phone number';
         document.getElementById('new-chat-error').classList.remove('hidden');
+        return;
     }
+
+    hideNewChatDialog();
+
+    // Set pending state — the regular composer will use this for the first message
+    state.pendingChatPhones = phones;
+    state.currentConversationId = null;
+    state.messages = [];
+
+    // Show conversation view with the phone numbers as title
+    document.getElementById('no-conversation').classList.add('hidden');
+    document.getElementById('conversation-view').classList.remove('hidden');
+    document.getElementById('conversation-title').textContent = phones.join(', ');
+    document.getElementById('messages').innerHTML = '<div class="empty-state">Send a message to start the conversation</div>';
+    document.getElementById('message-input').focus();
 }
 
 // ─── Media ───────────────────────────────────────────────────────────────────
@@ -1013,6 +1050,20 @@ function cancelMediaPreview() {
 }
 
 async function sendMediaFile(file, caption) {
+    // Pending new chat — need text message first to create the conversation
+    if (state.pendingChatPhones) {
+        if (!caption) {
+            alert('Please type a message first to start the conversation, then send media.');
+            return;
+        }
+        await sendPendingChatMessage(caption);
+        // Conversation created — now send media in it
+        if (state.currentConversationId && !state.pendingChatPhones) {
+            sendMediaFile(file, '');
+        }
+        return;
+    }
+
     if (!state.currentConversationId) return;
     const convId = state.currentConversationId;
     const to = getRecipientPhones(convId);
