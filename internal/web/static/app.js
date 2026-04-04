@@ -1454,7 +1454,8 @@ function renderMessages() {
     }
 
     // Second pass: render messages, skipping reaction messages
-    let html = '';
+    // Spacer pushes messages to bottom when list is shorter than viewport
+    let html = '<div class="timeline-spacer"></div>';
 
     // "Load older messages" button at top
     if (state.messages.length >= 20) {
