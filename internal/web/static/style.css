@@ -392,7 +392,6 @@ body {
     padding: 16px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
     gap: 4px;
     min-height: 0;
 }
