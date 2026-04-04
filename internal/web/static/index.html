@@ -81,11 +81,10 @@
             <div id="new-chat-dialog" class="modal hidden">
                 <div class="modal-content">
                     <h3>New chat</h3>
-                    <input type="text" id="new-chat-phone" placeholder="+1234567890 or +1234567890, +0987654321">
-                    <input type="text" id="new-chat-message" placeholder="Message...">
+                    <input type="text" id="new-chat-phone" placeholder="+1234567890 or +1234567890, +0987654321" onkeydown="if(event.key==='Enter'){event.preventDefault();openNewChat()}">
                     <div class="modal-actions">
                         <button class="btn-secondary" onclick="hideNewChatDialog()">Cancel</button>
-                        <button class="btn-primary" onclick="startNewChat()">Send</button>
+                        <button class="btn-primary" onclick="openNewChat()">Start</button>
                     </div>
                     <div id="new-chat-error" class="error hidden"></div>
                 </div>
