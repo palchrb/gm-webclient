@@ -47,6 +47,8 @@ type UserAccount struct {
 	PushSubscriptions map[string]*webpush.Subscription
 	pushMu            sync.RWMutex
 
+	NtfyEnabled bool // user opted in to ntfy push notifications
+
 	mu             sync.Mutex
 	signalRCancel  context.CancelFunc
 	fcmCancel      context.CancelFunc

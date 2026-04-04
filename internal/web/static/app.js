@@ -2300,11 +2300,25 @@ async function setupNtfyButton() {
         if (resp.enabled && resp.topic) {
             ntfyInfo = resp;
             btn.classList.remove('hidden');
+            // Update button text based on subscription status
+            btn.textContent = resp.subscribed ? '🔔 ntfy (on)' : '🔕 ntfy';
         } else {
             btn.classList.add('hidden');
         }
     } catch (e) {
         console.log('ntfy setup check failed:', e.message);
+    }
+}
+
+async function enableNtfyOnServer() {
+    if (ntfyInfo && ntfyInfo.subscribed) return;
+    try {
+        await api('/api/ntfy/subscribe', { method: 'POST', body: JSON.stringify({ enabled: true }) });
+        if (ntfyInfo) ntfyInfo.subscribed = true;
+        var btn = document.getElementById('ntfy-btn');
+        if (btn) btn.textContent = '🔔 ntfy (on)';
+    } catch (e) {
+        console.error('Failed to enable ntfy:', e);
     }
 }
 
@@ -2314,6 +2328,9 @@ function openNtfySubscribe() {
     var ua = navigator.userAgent || '';
     var isAndroid = /android/i.test(ua);
     var isIOS = /iP(hone|ad|od)/i.test(ua);
+
+    // Enable server-side ntfy push when user subscribes
+    enableNtfyOnServer();
 
     // Android: use ntfy:// deep link to open app directly
     if (isAndroid && ntfyInfo.appUrl) {
