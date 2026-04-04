@@ -811,16 +811,13 @@ body {
 /* ─── Media ─── */
 .message-image-container {
     max-width: 100%;
-    contain: content;
-    overflow: hidden;
-    border-radius: 8px;
-    margin-top: 4px;
 }
 
 .message-image {
     max-width: 100%;
     max-height: 300px;
     border-radius: 8px;
+    margin-top: 4px;
     cursor: pointer;
     display: block;
 }
