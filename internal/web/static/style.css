@@ -389,10 +389,16 @@ body {
 .messages {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    display: flex;
+    flex-direction: column;
+}
+
+.messages-inner {
+    margin-top: auto;
     display: flex;
     flex-direction: column;
     gap: 4px;
+    padding: 16px;
 }
 
 .timeline-spacer {

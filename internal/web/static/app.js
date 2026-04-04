@@ -1454,8 +1454,7 @@ function renderMessages() {
     }
 
     // Second pass: render messages, skipping reaction messages
-    // Spacer pushes messages to bottom when list is shorter than viewport
-    let html = '<div class="timeline-spacer"></div>';
+    let html = '<div class="messages-inner">';
 
     // "Load older messages" button at top
     if (state.messages.length >= 20) {
@@ -1476,6 +1475,7 @@ function renderMessages() {
         html += renderSingleMessage(msg, reactions);
     }
 
+    html += '</div>';
     container.innerHTML = html;
 
     // Load media asynchronously after rendering
@@ -1540,7 +1540,7 @@ function renderSingleMessage(msg, reactions) {
 
 // Append a single message to the DOM without re-rendering everything.
 function appendMessageToDOM(msg) {
-    const container = document.getElementById('messages');
+    const container = document.querySelector('.messages-inner') || document.getElementById('messages');
     const div = document.createElement('div');
     div.innerHTML = renderSingleMessage(msg, {});
     container.appendChild(div.firstElementChild);
