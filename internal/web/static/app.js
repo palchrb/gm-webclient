@@ -545,8 +545,6 @@ async function selectConversation(convId) {
     // Show cached messages immediately — no network wait.
     const cachedMsgs = cache.get('msgs_' + convId);
     const container = document.getElementById('messages');
-    // Lock scroll to bottom for 3s while media loads
-    _scrollLockUntil = Date.now() + 3000;
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
@@ -1456,8 +1454,7 @@ function renderMessages() {
     }
 
     // Second pass: render messages, skipping reaction messages
-    // Spacer pushes messages to bottom when list is shorter than viewport
-    let html = '<div class="timeline-spacer"></div>';
+    let html = '<div class="messages-inner">';
 
     // "Load older messages" button at top
     if (state.messages.length >= 20) {
@@ -1478,6 +1475,7 @@ function renderMessages() {
         html += renderSingleMessage(msg, reactions);
     }
 
+    html += '</div>';
     container.innerHTML = html;
 
     // Load media asynchronously after rendering
@@ -1542,7 +1540,7 @@ function renderSingleMessage(msg, reactions) {
 
 // Append a single message to the DOM without re-rendering everything.
 function appendMessageToDOM(msg) {
-    const container = document.getElementById('messages');
+    const container = document.querySelector('.messages-inner') || document.getElementById('messages');
     const div = document.createElement('div');
     div.innerHTML = renderSingleMessage(msg, {});
     container.appendChild(div.firstElementChild);
@@ -2026,15 +2024,8 @@ function formatMessageTime(dateStr) {
 
 // Called when an image finishes loading — prevents scroll jump.
 // If user was near bottom, stay at bottom. Otherwise hold position.
-var _scrollLockUntil = 0;
-
 function stabilizeScroll() {
     const container = document.getElementById('messages');
-    if (Date.now() < _scrollLockUntil) {
-        // During initial load: always pin to bottom
-        container.scrollTop = container.scrollHeight;
-        return;
-    }
     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
     if (nearBottom) {
         container.scrollTop = container.scrollHeight;
