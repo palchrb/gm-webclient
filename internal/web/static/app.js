@@ -547,9 +547,7 @@ async function selectConversation(convId) {
     if (cachedMsgs) {
         state.messages = cachedMsgs;
         renderMessages();
-        // Synchronous scroll to avoid the 2-frame flicker from rAF-based scroll
-        const container = document.getElementById('messages');
-        container.scrollTop = container.scrollHeight;
+        startScrollPin();
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -566,8 +564,7 @@ async function selectConversation(convId) {
             );
             cache.set('msgs_' + convId, state.messages);
             renderMessages();
-            const container = document.getElementById('messages');
-            container.scrollTop = container.scrollHeight;
+            startScrollPin();
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -584,6 +581,7 @@ async function selectConversation(convId) {
 }
 
 function deselectConversation() {
+    stopScrollPin();
     state.currentConversationId = null;
     document.getElementById('no-conversation').classList.remove('hidden');
     document.getElementById('conversation-view').classList.add('hidden');
@@ -2051,6 +2049,47 @@ function scrollToBottom(force) {
 // Force-scroll (used when selecting a conversation or sending)
 function scrollToBottomForce() {
     scrollToBottom(true);
+}
+
+// --- Scroll-pin: keep scroll at bottom while media loads after opening a conversation ---
+var _scrollPinObserver = null;
+
+function startScrollPin() {
+    stopScrollPin();
+    var container = document.getElementById('messages');
+    if (!container) return;
+
+    container.scrollTop = container.scrollHeight;
+
+    // Watch for height changes (images/audio loading) and keep pinned to bottom
+    _scrollPinObserver = new ResizeObserver(function() {
+        container.scrollTop = container.scrollHeight;
+    });
+    _scrollPinObserver.observe(container);
+
+    // Stop pinning as soon as user scrolls up
+    container.addEventListener('scroll', _onScrollPinCheck);
+}
+
+function _onScrollPinCheck() {
+    var container = document.getElementById('messages');
+    if (!container || !_scrollPinObserver) return;
+    var distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    // If user scrolled away from bottom, they want to read history — stop pinning
+    if (distFromBottom > 200) {
+        stopScrollPin();
+    }
+}
+
+function stopScrollPin() {
+    if (_scrollPinObserver) {
+        _scrollPinObserver.disconnect();
+        _scrollPinObserver = null;
+    }
+    var container = document.getElementById('messages');
+    if (container) {
+        container.removeEventListener('scroll', _onScrollPinCheck);
+    }
 }
 
 function showChatView() {
