@@ -8,6 +8,7 @@ const state = {
     messages: [],
     members: {},         // convId -> UserInfoModel[]
     memberNames: {},     // userId/phone -> display name (global cache)
+    forceScrollOnMediaLoad: false,
     eventSource: null,
 };
 
@@ -53,6 +54,13 @@ async function init() {
             state.phone = resp.phone;
             state.userId = (resp.userId || '').toLowerCase();
             showChatView();
+            document.getElementById('messages').addEventListener('scroll', function() {
+                if (!state.forceScrollOnMediaLoad) return;
+                const c = this;
+                if (c.scrollHeight - c.scrollTop - c.clientHeight >= 150) {
+                    state.forceScrollOnMediaLoad = false;
+                }
+            }, { passive: true });
             await loadConversations();
             connectSSE();
             setupPushNotifications();
@@ -549,6 +557,7 @@ async function selectConversation(convId) {
         state.messages = cachedMsgs;
         renderMessages();
         container.scrollTop = container.scrollHeight;
+        state.forceScrollOnMediaLoad = true;
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -566,6 +575,7 @@ async function selectConversation(convId) {
             cache.set('msgs_' + convId, state.messages);
             renderMessages();
             container.scrollTop = container.scrollHeight;
+            state.forceScrollOnMediaLoad = true;
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -864,6 +874,7 @@ async function fetchMediaForMessage(convId, msgId) {
 }
 
 async function loadOlderMessages() {
+    state.forceScrollOnMediaLoad = false;
     const convId = state.currentConversationId;
     if (!convId || state.messages.length === 0) return;
     // Find the oldest non-optimistic message ID
@@ -2026,6 +2037,10 @@ function formatMessageTime(dateStr) {
 // If user was near bottom, stay at bottom. Otherwise hold position.
 function stabilizeScroll() {
     const container = document.getElementById('messages');
+    if (state.forceScrollOnMediaLoad) {
+        container.scrollTop = container.scrollHeight;
+        return;
+    }
     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
     if (nearBottom) {
         container.scrollTop = container.scrollHeight;
