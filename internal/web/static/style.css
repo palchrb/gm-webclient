@@ -392,7 +392,6 @@ body {
     padding: 16px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between; /* push messages to bottom when list is short */
     gap: 4px;
 }
 
