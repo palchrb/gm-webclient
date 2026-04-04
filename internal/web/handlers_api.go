@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -261,9 +262,20 @@ func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive the Hermes user ID from the phone number
-	recipientID := gm.PhoneToHermesUserID(req.Phone)
-	result, err := session.Account.API.SendMessage(r.Context(), []string{recipientID}, req.Body)
+	// Support multiple recipients separated by , or ; for group conversations
+	var recipientIDs []string
+	for _, p := range strings.FieldsFunc(req.Phone, func(r rune) bool { return r == ',' || r == ';' }) {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			recipientIDs = append(recipientIDs, gm.PhoneToHermesUserID(p))
+		}
+	}
+	if len(recipientIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one phone number is required"})
+		return
+	}
+
+	result, err := session.Account.API.SendMessage(r.Context(), recipientIDs, req.Body)
 	if err != nil {
 		handleAPIError(w, err, "send new chat message")
 		return
