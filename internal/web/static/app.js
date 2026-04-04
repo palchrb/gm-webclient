@@ -1455,6 +1455,7 @@ function renderMessages() {
 
     // Second pass: render messages, skipping reaction messages
     let html = '';
+    html += '<div style="flex:1 0 0;"></div>';
 
     // "Load older messages" button at top
     if (state.messages.length >= 20) {
