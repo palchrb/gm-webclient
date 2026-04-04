@@ -2326,7 +2326,7 @@ async function setupNtfyButton() {
 async function enableNtfyOnServer() {
     if (ntfyInfo && ntfyInfo.subscribed) return;
     try {
-        await api('/api/ntfy/subscribe', { method: 'POST', body: JSON.stringify({ enabled: true }) });
+        await api('/api/ntfy/subscribe', { method: 'POST', body: { enabled: true } });
         if (ntfyInfo) ntfyInfo.subscribed = true;
         var btn = document.getElementById('ntfy-btn');
         if (btn) btn.textContent = '🔔 ntfy (on)';
