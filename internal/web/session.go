@@ -144,6 +144,25 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 			acct.fcmCancel()
 		}
 
+		// Deregister old instance with Garmin to avoid ghost devices piling up
+		if acct.Auth.InstanceID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if acct.Auth.TokenExpired() {
+				if err := acct.Auth.RefreshHermesToken(ctx); err != nil {
+					sm.logger.Warn("Token refresh failed during old instance deregister, trying anyway",
+						"phone", phone, "error", err)
+				}
+			}
+			if err := acct.Auth.DeleteAppRegistration(ctx, acct.Auth.InstanceID); err != nil {
+				sm.logger.Warn("Failed to deregister old instance with Garmin",
+					"phone", phone, "instanceId", acct.Auth.InstanceID, "error", err)
+			} else {
+				sm.logger.Info("Deregistered old Garmin instance before re-login",
+					"phone", phone, "instanceId", acct.Auth.InstanceID)
+			}
+			cancel()
+		}
+
 		hermesLogger := logger.With("component", "hermes", "phone", phone)
 		acct.mu.Lock()
 		acct.Auth = auth
