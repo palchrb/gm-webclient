@@ -389,20 +389,11 @@ body {
 .messages {
     flex: 1;
     overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-}
-
-.messages-inner {
-    margin-top: auto;
+    overflow-anchor: auto;
+    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 16px;
-}
-
-.timeline-spacer {
-    flex: 1;
 }
 
 .message-group {
