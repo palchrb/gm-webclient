@@ -1654,15 +1654,14 @@ function mediaSizeStyle(msg) {
     // Pre-calculate container size from metadata to prevent layout shift
     var meta = msg.mediaMetadata;
     if (!meta || !meta.width || !meta.height) {
-        // Fallback: reserve a default placeholder size
-        if (msg.mediaType === 'ImageAvif') return 'width:200px;height:150px;';
+        // No metadata — let the image size naturally, stabilizeScroll handles it
         return '';
     }
     var w = meta.width, h = meta.height;
     var maxW = 300, maxH = 300;
     if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
     if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
-    return 'width:' + w + 'px;height:' + h + 'px;';
+    return 'min-width:' + w + 'px;min-height:' + h + 'px;';
 }
 
 function getMediaHtml(msg, convId) {
@@ -1685,7 +1684,7 @@ function getMediaHtml(msg, convId) {
 
     // Not cached yet — show placeholder with reserved size
     if (msg.mediaType === 'ImageAvif') {
-        return `<div class="message-image-container" id="media-${msgId}" style="${sizeStyle}background:var(--bg-secondary);"></div>`;
+        return `<div class="message-image-container" id="media-${msgId}" style="${sizeStyle}"></div>`;
     }
     if (msg.mediaType === 'AudioOgg') {
         return `<div class="message-audio" id="media-${msgId}"></div>`;
