@@ -54,13 +54,6 @@ async function init() {
             state.phone = resp.phone;
             state.userId = (resp.userId || '').toLowerCase();
             showChatView();
-            document.getElementById('messages').addEventListener('scroll', function() {
-                if (!state.forceScrollOnMediaLoad) return;
-                const c = this;
-                if (c.scrollHeight - c.scrollTop - c.clientHeight >= 150) {
-                    state.forceScrollOnMediaLoad = false;
-                }
-            }, { passive: true });
             await loadConversations();
             connectSSE();
             setupPushNotifications();
@@ -555,9 +548,9 @@ async function selectConversation(convId) {
     const container = document.getElementById('messages');
     if (cachedMsgs) {
         state.messages = cachedMsgs;
+        state.forceScrollOnMediaLoad = true;
         renderMessages();
         container.scrollTop = container.scrollHeight;
-        state.forceScrollOnMediaLoad = true;
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -573,9 +566,9 @@ async function selectConversation(convId) {
                 (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
             );
             cache.set('msgs_' + convId, state.messages);
+            state.forceScrollOnMediaLoad = true;
             renderMessages();
             container.scrollTop = container.scrollHeight;
-            state.forceScrollOnMediaLoad = true;
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -2086,6 +2079,13 @@ function showChatView() {
     document.getElementById('login-view').classList.add('hidden');
     document.getElementById('chat-view').classList.remove('hidden');
     document.getElementById('user-phone').textContent = state.phone;
+    document.getElementById('messages').addEventListener('scroll', function() {
+        if (!state.forceScrollOnMediaLoad) return;
+        const c = this;
+        if (c.scrollHeight - c.scrollTop - c.clientHeight >= 150) {
+            state.forceScrollOnMediaLoad = false;
+        }
+    }, { passive: true });
 }
 
 function toggleSidebar() {
