@@ -8,7 +8,6 @@ const state = {
     messages: [],
     members: {},         // convId -> UserInfoModel[]
     memberNames: {},     // userId/phone -> display name (global cache)
-    forceScrollOnMediaLoad: false,
     eventSource: null,
 };
 
@@ -549,9 +548,8 @@ async function selectConversation(convId) {
     const container = document.getElementById('messages');
     if (cachedMsgs) {
         state.messages = cachedMsgs;
-        state.forceScrollOnMediaLoad = true;
         renderMessages();
-        container.scrollTop = container.scrollHeight;
+        container.scrollTop = 0;
     }
 
     // Refresh from API using lightweight diff — only appends new messages,
@@ -567,9 +565,8 @@ async function selectConversation(convId) {
                 (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
             );
             cache.set('msgs_' + convId, state.messages);
-            state.forceScrollOnMediaLoad = true;
             renderMessages();
-            container.scrollTop = container.scrollHeight;
+            container.scrollTop = 0;
 
             if (state.messages.length > 0) {
                 const lastMsg = state.messages[state.messages.length - 1];
@@ -898,7 +895,6 @@ async function fetchMediaForMessage(convId, msgId) {
 }
 
 async function loadOlderMessages() {
-    state.forceScrollOnMediaLoad = false;
     const convId = state.currentConversationId;
     if (!convId || state.messages.length === 0) return;
     // Find the oldest non-optimistic message ID
@@ -906,7 +902,7 @@ async function loadOlderMessages() {
     if (!oldest) return;
 
     const container = document.getElementById('messages');
-    const scrollHeightBefore = container.scrollHeight;
+    const scrollTopBefore = container.scrollTop;
 
     try {
         const resp = await api(`/api/conversations/${convId}?limit=200&olderThanId=${oldest.messageId}`);
@@ -919,10 +915,12 @@ async function loadOlderMessages() {
         const newMsgs = older.filter(m => !existing.has(m.messageId));
         state.messages = [...newMsgs, ...state.messages];
         cache.set('msgs_' + convId, state.messages);
+        const scrollHeightBefore = container.scrollHeight;
         renderMessages();
-        // Maintain scroll position (don't jump)
+        // column-reverse: new content at top increases scrollHeight,
+        // adjust scrollTop by the delta so user's view stays put
         requestAnimationFrame(() => {
-            container.scrollTop = container.scrollHeight - scrollHeightBefore;
+            container.scrollTop = scrollTopBefore + (container.scrollHeight - scrollHeightBefore);
         });
     } catch (e) {
         console.error('Failed to load older messages:', e);
@@ -1510,7 +1508,6 @@ function renderMessages() {
 
     // Second pass: render messages, skipping reaction messages
     let html = '';
-    html += '<div style="flex:1 0 0;"></div>';
 
     // "Load older messages" button at top
     if (state.messages.length >= 20) {
@@ -1531,7 +1528,8 @@ function renderMessages() {
         html += renderSingleMessage(msg, reactions);
     }
 
-    container.innerHTML = html;
+    // Wrap in inner div so column-reverse positions it at the bottom
+    container.innerHTML = '<div class="messages-inner">' + html + '</div>';
 
     // Load media asynchronously after rendering
     loadMediaForMessages();
@@ -1596,9 +1594,10 @@ function renderSingleMessage(msg, reactions) {
 // Append a single message to the DOM without re-rendering everything.
 function appendMessageToDOM(msg) {
     const container = document.getElementById('messages');
+    const inner = container.querySelector('.messages-inner');
     const div = document.createElement('div');
     div.innerHTML = renderSingleMessage(msg, {});
-    container.appendChild(div.firstElementChild);
+    (inner || container).appendChild(div.firstElementChild);
     // Load media for just this message
     if (msg.mediaId && msg.mediaId !== '00000000-0000-0000-0000-000000000000' && msg.mediaType) {
         loadMediaForMessages();
@@ -1710,7 +1709,7 @@ function mediaSizeStyle(msg) {
     // Pre-calculate container size from metadata to prevent layout shift
     var meta = msg.mediaMetadata;
     if (!meta || !meta.width || !meta.height) {
-        // No metadata — let the image size naturally, stabilizeScroll handles it
+        // No metadata — let the image size naturally
         return '';
     }
     var w = meta.width, h = meta.height;
@@ -1731,7 +1730,7 @@ function getMediaHtml(msg, convId) {
     const cachedUrl = mediaUrlCache[msgId];
     if (cachedUrl) {
         if (msg.mediaType === 'ImageAvif') {
-            return `<div class="message-image-container" style="${sizeStyle}"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')" onload="stabilizeScroll()"></div>`;
+            return `<div class="message-image-container" style="${sizeStyle}"><img class="message-image" src="${escapeHtml(cachedUrl)}" alt="Image" onclick="openLightbox('${escapeHtml(cachedUrl)}')"></div>`;
         }
         if (msg.mediaType === 'AudioOgg') {
             return `<div class="message-audio" id="media-${msgId}"></div>`;
@@ -1768,7 +1767,7 @@ function loadMediaForMessages() {
         el.dataset.loaded = 'true';
 
         if (msg.mediaType === 'ImageAvif') {
-            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')" onload="stabilizeScroll()">`;
+            el.innerHTML = `<img class="message-image" src="${escapeHtml(url)}" alt="Image" onclick="openLightbox('${escapeHtml(url)}')">`;
         } else if (msg.mediaType === 'AudioOgg') {
             try {
                 createWaveformPlayer(el, url);
@@ -2077,20 +2076,6 @@ function formatMessageTime(dateStr) {
     return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// Called when an image finishes loading — prevents scroll jump.
-// If user was near bottom, stay at bottom. Otherwise hold position.
-function stabilizeScroll() {
-    const container = document.getElementById('messages');
-    if (state.forceScrollOnMediaLoad) {
-        container.scrollTop = container.scrollHeight;
-        return;
-    }
-    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
-    if (nearBottom) {
-        container.scrollTop = container.scrollHeight;
-    }
-}
-
 function openLightbox(url) {
     const overlay = document.createElement('div');
     overlay.className = 'lightbox';
@@ -2106,15 +2091,13 @@ function escapeHtml(str) {
 }
 
 // Only auto-scroll if user is already near the bottom (within 150px).
-// This prevents jumping around when reading history.
+// With column-reverse, scrollTop=0 is the bottom (newest messages).
 function scrollToBottom(force) {
     const container = document.getElementById('messages');
-    // Double rAF ensures layout is complete before scrolling (important on mobile)
     requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-            const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-            if (force || nearBottom) {
-                container.scrollTop = container.scrollHeight;
+            if (force || container.scrollTop < 150) {
+                container.scrollTop = 0;
             }
         });
     });
@@ -2130,13 +2113,6 @@ function showChatView() {
     document.getElementById('login-view').classList.add('hidden');
     document.getElementById('chat-view').classList.remove('hidden');
     document.getElementById('user-phone').textContent = state.phone;
-    document.getElementById('messages').addEventListener('scroll', function() {
-        if (!state.forceScrollOnMediaLoad) return;
-        const c = this;
-        if (c.scrollHeight - c.scrollTop - c.clientHeight >= 150) {
-            state.forceScrollOnMediaLoad = false;
-        }
-    }, { passive: true });
 }
 
 function toggleSidebar() {
