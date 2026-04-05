@@ -392,8 +392,13 @@ body {
     padding: 16px;
     display: flex;
     flex-direction: column-reverse;
-    gap: 4px;
     min-height: 0;
+}
+
+.messages-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 
 .message-group {
