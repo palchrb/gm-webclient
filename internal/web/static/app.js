@@ -1454,19 +1454,46 @@ function extractReaction(msg) {
     return { emoji: match[1], targetText: targetText };
 }
 
+// Garmin's native apps "quote" caption-less media in reactions as
+// "<icon>(<uuid>)" — e.g. "📷(816CA11B-FD69-49AD-A849-2AE7121E215F)".
+// The icon varies per media type, so anchor only on the trailing "(uuid)".
+const REACTION_MEDIA_REF_REGEX = /\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)$/;
+
+function extractReactionMediaUUID(targetText) {
+    if (!targetText) return null;
+    const m = targetText.match(REACTION_MEDIA_REF_REGEX);
+    return m ? m[1].toLowerCase() : null;
+}
+
 // Find the target message for a reaction by matching body text,
 // preferring the message closest in time (before the reaction).
+// For caption-less media reactions ("📷(uuid)"), match by mediaId/uuid instead.
 function findReactionTarget(r, reactionMsg) {
     const reactionTime = new Date(reactionMsg.sentAt || reactionMsg.receivedAt || 0).getTime();
+    const mediaUUID = extractReactionMediaUUID(r.targetText);
     let target = null;
     let bestTimeDiff = Infinity;
     for (const candidate of state.messages) {
         if (candidate.messageId === reactionMsg.messageId) continue;
         if (isReactionMessage(candidate)) continue;
-        const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-        // Exact match, or startsWith for truncated reactions from iOS
-        if (candidateBody !== r.targetText && !candidateBody.startsWith(r.targetText)) continue;
-        if (!r.targetText) continue; // don't match empty
+
+        let isMatch = false;
+        if (mediaUUID) {
+            // Media-reference reaction: match against mediaId or uuid field
+            const candMediaId = (candidate.mediaId || '').toLowerCase();
+            const candUUID = (candidate.uuid || '').toLowerCase();
+            if (candMediaId && candMediaId === mediaUUID) isMatch = true;
+            else if (candUUID && candUUID === mediaUUID) isMatch = true;
+        } else {
+            // Text reaction: match against stripped body text
+            const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
+            if (!r.targetText) continue; // don't match empty
+            if (candidateBody === r.targetText || candidateBody.startsWith(r.targetText)) {
+                isMatch = true;
+            }
+        }
+        if (!isMatch) continue;
+
         const candidateTime = new Date(candidate.sentAt || candidate.receivedAt || 0).getTime();
         const diff = Math.abs(reactionTime - candidateTime);
         if (diff < bestTimeDiff) {
