@@ -49,11 +49,50 @@ type UserAccount struct {
 
 	NtfyEnabled bool // user opted in to ntfy push notifications
 
+	pushDedup pushDedupCache // dedup messageIds across SignalR + FCM push paths
+
 	mu             sync.Mutex
 	signalRCancel  context.CancelFunc
 	fcmCancel      context.CancelFunc
 	signalRStarted bool
 	fcmStarted     bool
+}
+
+// pushDedupCache deduplicates push notifications by messageId across the
+// SignalR and FCM channels, which both deliver the same Garmin message.
+// Without this, every incoming message generates two ntfy + two web push.
+type pushDedupCache struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+const pushDedupTTL = 60 * time.Second
+
+// shouldSend returns true if this messageId has not been pushed recently.
+// It also opportunistically prunes expired entries to keep the map small.
+func (c *pushDedupCache) shouldSend(messageID string) bool {
+	if messageID == "" {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if c.seen == nil {
+		c.seen = make(map[string]time.Time)
+	}
+	if t, ok := c.seen[messageID]; ok && now.Sub(t) < pushDedupTTL {
+		return false
+	}
+	c.seen[messageID] = now
+	// Prune expired entries (cheap when map stays small)
+	if len(c.seen) > 64 {
+		for id, t := range c.seen {
+			if now.Sub(t) >= pushDedupTTL {
+				delete(c.seen, id)
+			}
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +140,15 @@ type SessionManager struct {
 	pendingReauth  map[string]time.Time    // phone → when passkey was verified (awaiting OTP reauth)
 	fcmDataDir     string
 	sessionDays    int
+	ntfyStore      *NtfyStore // optional, for restoring per-phone ntfy preference
 	mu             sync.RWMutex
 	logger         *slog.Logger
+}
+
+// SetNtfyStore wires a NtfyStore so account creation restores the user's
+// ntfy enable/disable preference from disk.
+func (sm *SessionManager) SetNtfyStore(store *NtfyStore) {
+	sm.ntfyStore = store
 }
 
 func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
@@ -172,6 +218,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		acct.fcmStarted = false
 		acct.mu.Unlock()
 
+		// Refresh ntfy preference from disk in case it was updated externally.
+		if sm.ntfyStore != nil {
+			acct.NtfyEnabled = sm.ntfyStore.Load(phone)
+		}
+
 		sm.wireAccountEvents(acct, logger)
 		return acct
 	}
@@ -195,6 +246,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		SignalR: sr,
 		FCM:     fcmClient,
 		SSE:     NewSSEBroker(),
+	}
+
+	// Restore per-phone ntfy preference (survives logout, session expiry, restarts).
+	if sm.ntfyStore != nil {
+		acct.NtfyEnabled = sm.ntfyStore.Load(phone)
 	}
 
 	sm.wireAccountEvents(acct, logger)

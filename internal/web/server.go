@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
 //go:embed static
@@ -19,6 +20,7 @@ type Server struct {
 	vapidKeys      *VAPIDKeys
 	pushStore      *PushSubscriptionStore
 	passkeyStore   *PasskeyStore          // nil when dataDir is empty
+	ntfyStore      *NtfyStore             // nil when dataDir is empty
 	webAuthn       *webauthn.WebAuthn     // nil when ORIGIN is not set
 	ntfyConfig     *NtfyConfig            // nil when NTFY_URL is not set
 	pushAlways     bool                   // send web push even when browser tabs are open
@@ -100,9 +102,11 @@ func WithSessionKey(key string) ServerOption {
 func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts ...ServerOption) *Server {
 	var pushStore *PushSubscriptionStore
 	var passkeyStore *PasskeyStore
+	var ntfyStore *NtfyStore
 	if dataDir != "" {
 		pushStore = NewPushSubscriptionStore(dataDir)
 		passkeyStore = NewPasskeyStore(dataDir)
+		ntfyStore = NewNtfyStore(dataDir)
 	}
 
 	s := &Server{
@@ -110,9 +114,13 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		vapidKeys:    vapidKeys,
 		pushStore:    pushStore,
 		passkeyStore: passkeyStore,
+		ntfyStore:    ntfyStore,
 		pushAlways:   true,
 		logger:       logger,
 		mux:          http.NewServeMux(),
+	}
+	if ntfyStore != nil {
+		s.sessions.SetNtfyStore(ntfyStore)
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -132,8 +140,16 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 }
 
 // wirePushCallback sets the correct push callback on an account's SSE broker.
+// Deduplicates by messageId across SignalR + FCM so each message generates
+// at most one push notification (web push + ntfy) within a short window.
 func (s *Server) wirePushCallback(acct *UserAccount) {
 	pushFn := func(event SSEEvent) {
+		if msg, ok := event.Data.(gm.MessageModel); ok {
+			if !acct.pushDedup.shouldSend(msg.MessageID.String()) {
+				s.logger.Debug("Push dedup: skipping duplicate", "phone", acct.Phone, "messageId", msg.MessageID)
+				return
+			}
+		}
 		s.sendWebPush(acct, event)
 		s.sendNtfy(acct, event)
 	}

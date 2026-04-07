@@ -169,8 +169,20 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 				continue
 			}
 
-			// Restore per-user settings
-			session.Account.NtfyEnabled = entry.NtfyEnabled
+			// Restore ntfy preference. Per-phone ntfy store is the source of
+			// truth (already loaded by getOrCreateAccount); fall back to the
+			// legacy field on the encrypted session entry, and migrate it
+			// over so future logins/restarts pick it up reliably.
+			if sm.ntfyStore == nil {
+				session.Account.NtfyEnabled = entry.NtfyEnabled
+			} else if entry.NtfyEnabled && !sm.ntfyStore.Load(entry.Phone) {
+				if err := sm.ntfyStore.Save(entry.Phone, true); err != nil {
+					sm.logger.Warn("Failed to migrate ntfy preference", "phone", entry.Phone, "error", err)
+				} else {
+					sm.logger.Info("Migrated ntfy preference to per-phone store", "phone", entry.Phone)
+				}
+				session.Account.NtfyEnabled = true
+			}
 
 			// Replace auto-generated ID with persisted one
 			sm.mu.Lock()
