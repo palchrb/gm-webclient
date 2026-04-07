@@ -1503,13 +1503,28 @@ function findReactionTarget(r, reactionMsg) {
         }
     }
     if (!target && mediaUUID) {
-        // Log a sample of candidates so we can diagnose which field Garmin
-        // actually used (mediaId / uuid / messageId / something else).
-        const sample = state.messages
-            .filter(m => !isReactionMessage(m) && (m.mediaId || m.uuid))
-            .slice(-5)
-            .map(m => ({ messageId: m.messageId, mediaId: m.mediaId, uuid: m.uuid }));
-        console.warn('Reaction media match failed', { mediaUUID, targetText: r.targetText, candidates: sample });
+        // Dump full media-bearing messages so we can see which field Garmin
+        // actually uses for the iOS PHAsset-style UUIDs in reactions.
+        const mediaMessages = state.messages.filter(m => !isReactionMessage(m) && (m.mediaId || m.uuid || m.otaUuid));
+        console.warn('Reaction media match failed', {
+            mediaUUID,
+            targetText: r.targetText,
+            stateMessageCount: state.messages.length,
+            mediaCandidateCount: mediaMessages.length,
+        });
+        // Log each candidate as a separate entry so DevTools shows them expanded.
+        for (const m of mediaMessages.slice(-10)) {
+            console.warn('  candidate:', JSON.stringify({
+                messageId: m.messageId,
+                mediaId: m.mediaId,
+                uuid: m.uuid,
+                otaUuid: m.otaUuid,
+                parentMessageId: m.parentMessageId,
+                mediaType: m.mediaType,
+                from: m.from,
+                sentAt: m.sentAt,
+            }));
+        }
     }
     return target;
 }
