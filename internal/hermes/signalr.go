@@ -278,6 +278,7 @@ type hermesReceiver struct {
 }
 
 func (r *hermesReceiver) ReceiveMessage(raw json.RawMessage) {
+	r.sr.logger.Debug("ReceiveMessage raw", "json", truncate(string(raw), 10000))
 	var msg MessageModel
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		r.sr.logger.Error("Error parsing ReceiveMessage", "error", err)
