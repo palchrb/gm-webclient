@@ -1479,11 +1479,14 @@ function findReactionTarget(r, reactionMsg) {
 
         let isMatch = false;
         if (mediaUUID) {
-            // Media-reference reaction: match against mediaId or uuid field
+            // Media-reference reaction: Garmin embeds either mediaId, uuid,
+            // or messageId into the reference — it varies, so accept any.
             const candMediaId = (candidate.mediaId || '').toLowerCase();
             const candUUID = (candidate.uuid || '').toLowerCase();
+            const candMsgId = (candidate.messageId || '').toLowerCase();
             if (candMediaId && candMediaId === mediaUUID) isMatch = true;
             else if (candUUID && candUUID === mediaUUID) isMatch = true;
+            else if (candMsgId && candMsgId === mediaUUID) isMatch = true;
         } else {
             // Text reaction: match against stripped body text
             const candidateBody = (candidate.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
@@ -1500,6 +1503,15 @@ function findReactionTarget(r, reactionMsg) {
             bestTimeDiff = diff;
             target = candidate;
         }
+    }
+    if (!target && mediaUUID) {
+        // Log a sample of candidates so we can diagnose which field Garmin
+        // actually used (mediaId / uuid / messageId / something else).
+        const sample = state.messages
+            .filter(m => !isReactionMessage(m) && (m.mediaId || m.uuid))
+            .slice(-5)
+            .map(m => ({ messageId: m.messageId, mediaId: m.mediaId, uuid: m.uuid }));
+        console.warn('Reaction media match failed', { mediaUUID, targetText: r.targetText, candidates: sample });
     }
     return target;
 }
