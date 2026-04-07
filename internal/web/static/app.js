@@ -1349,16 +1349,7 @@ function handleIncomingMessage(msg) {
                 const r = extractReaction(msg);
                 console.log('  Reaction extracted:', r);
                 if (r) {
-                    const target = findReactionTarget(r, msg);
-                    console.log('  Reaction target:', target ? target.messageId : 'NOT FOUND');
-                    if (target) {
-                        // Clear matching optimistic reaction (server confirmed it)
-                        if (target._reactions) {
-                            const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
-                            if (idx >= 0) target._reactions.splice(idx, 1);
-                        }
-                        updateMessageReactions(target.messageId);
-                    }
+                    resolveAndApplyReaction(r, msg, convId);
                 }
             } else {
                 appendMessageToDOM(msg);
@@ -1514,6 +1505,52 @@ function findReactionTarget(r, reactionMsg) {
         console.warn('Reaction media match failed', { mediaUUID, targetText: r.targetText, candidates: sample });
     }
     return target;
+}
+
+// Resolve a reaction to its target message and update the UI.
+// First tries state.messages (synchronously), then falls back to re-fetching
+// the conversation from the REST API — this mirrors the matrix-garmin bridge's
+// resolveReactionParent → resolveReactionParentID strategy. SignalR-pushed
+// media messages may have a null `uuid` field, but REST responses populate it.
+async function resolveAndApplyReaction(r, reactionMsg, convId) {
+    let target = findReactionTarget(r, reactionMsg);
+    if (!target) {
+        // Fallback: refetch conversation detail from REST and retry.
+        // This is especially important for caption-less media reactions
+        // where the UUID field may be absent from SignalR events.
+        try {
+            const resp = await api(`/api/conversations/${convId}?limit=200`);
+            const refreshed = (resp.messages || []).sort(
+                (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+            );
+            // Merge refreshed fields into existing state.messages by messageId,
+            // preferring refreshed values (which include uuid for media).
+            const byId = {};
+            for (const m of state.messages) byId[m.messageId] = m;
+            for (const m of refreshed) {
+                byId[m.messageId] = Object.assign({}, byId[m.messageId] || {}, m);
+            }
+            state.messages = Object.values(byId).sort(
+                (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+            );
+            cache.set('msgs_' + convId, state.messages);
+            target = findReactionTarget(r, reactionMsg);
+            console.log('  Reaction target (after refetch):', target ? target.messageId : 'NOT FOUND');
+        } catch (e) {
+            console.error('Reaction refetch failed:', e);
+        }
+    } else {
+        console.log('  Reaction target:', target.messageId);
+    }
+
+    if (!target) return;
+
+    // Clear matching optimistic reaction (server confirmed it)
+    if (target._reactions) {
+        const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
+        if (idx >= 0) target._reactions.splice(idx, 1);
+    }
+    updateMessageReactions(target.messageId);
 }
 
 function renderMessages() {
