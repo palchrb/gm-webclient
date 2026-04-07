@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
 //go:embed static
@@ -139,8 +140,16 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 }
 
 // wirePushCallback sets the correct push callback on an account's SSE broker.
+// Deduplicates by messageId across SignalR + FCM so each message generates
+// at most one push notification (web push + ntfy) within a short window.
 func (s *Server) wirePushCallback(acct *UserAccount) {
 	pushFn := func(event SSEEvent) {
+		if msg, ok := event.Data.(gm.MessageModel); ok {
+			if !acct.pushDedup.shouldSend(msg.MessageID.String()) {
+				s.logger.Debug("Push dedup: skipping duplicate", "phone", acct.Phone, "messageId", msg.MessageID)
+				return
+			}
+		}
 		s.sendWebPush(acct, event)
 		s.sendNtfy(acct, event)
 	}
