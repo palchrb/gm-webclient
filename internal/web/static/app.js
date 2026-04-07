@@ -2036,15 +2036,17 @@ function updateMessageStatus(msgId) {
 
 function collectReactionsForMessage(targetMsg) {
     const results = [];
-    const targetBody = (targetMsg.messageBody || '').replace(/[\u200a\u200b\u2009]/g, '').trim();
-    if (!targetBody) return results;
-    const targetTime = new Date(targetMsg.sentAt || targetMsg.receivedAt || 0).getTime();
+    // Use findReactionTarget so this matches the same way as the initial
+    // render in renderMessages — handles both text reactions AND media-UUID
+    // reactions on caption-less images/audio.
     for (const msg of state.messages) {
         if (!isReactionMessage(msg)) continue;
         const r = extractReaction(msg);
         if (!r || !r.targetText) continue;
-        if (r.targetText !== targetBody && !targetBody.startsWith(r.targetText)) continue;
-        results.push({ emoji: r.emoji, from: msg.from, isMine: isMine(msg) });
+        const target = findReactionTarget(r, msg);
+        if (target && target.messageId === targetMsg.messageId) {
+            results.push({ emoji: r.emoji, from: msg.from, isMine: isMine(msg) });
+        }
     }
     return results;
 }
