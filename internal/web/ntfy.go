@@ -178,8 +178,12 @@ func (srv *Server) handleNtfySubscribe(w http.ResponseWriter, r *http.Request) {
 
 	session.Account.NtfyEnabled = req.Enabled
 
-	// Persist change
-	srv.PersistSessions()
+	// Persist as a per-phone preference (survives logout/restart).
+	if srv.ntfyStore != nil {
+		if err := srv.ntfyStore.Save(session.Phone(), req.Enabled); err != nil {
+			srv.logger.Warn("Failed to persist ntfy preference", "phone", session.Phone(), "error", err)
+		}
+	}
 
 	srv.logger.Info("ntfy subscription changed", "phone", session.Phone(), "enabled", req.Enabled)
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})

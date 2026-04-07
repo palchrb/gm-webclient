@@ -101,8 +101,15 @@ type SessionManager struct {
 	pendingReauth  map[string]time.Time    // phone → when passkey was verified (awaiting OTP reauth)
 	fcmDataDir     string
 	sessionDays    int
+	ntfyStore      *NtfyStore // optional, for restoring per-phone ntfy preference
 	mu             sync.RWMutex
 	logger         *slog.Logger
+}
+
+// SetNtfyStore wires a NtfyStore so account creation restores the user's
+// ntfy enable/disable preference from disk.
+func (sm *SessionManager) SetNtfyStore(store *NtfyStore) {
+	sm.ntfyStore = store
 }
 
 func NewSessionManager(logger *slog.Logger, fcmDataDir string, sessionDays int) *SessionManager {
@@ -172,6 +179,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		acct.fcmStarted = false
 		acct.mu.Unlock()
 
+		// Refresh ntfy preference from disk in case it was updated externally.
+		if sm.ntfyStore != nil {
+			acct.NtfyEnabled = sm.ntfyStore.Load(phone)
+		}
+
 		sm.wireAccountEvents(acct, logger)
 		return acct
 	}
@@ -195,6 +207,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		SignalR: sr,
 		FCM:     fcmClient,
 		SSE:     NewSSEBroker(),
+	}
+
+	// Restore per-phone ntfy preference (survives logout, session expiry, restarts).
+	if sm.ntfyStore != nil {
+		acct.NtfyEnabled = sm.ntfyStore.Load(phone)
 	}
 
 	sm.wireAccountEvents(acct, logger)

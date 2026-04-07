@@ -19,6 +19,7 @@ type Server struct {
 	vapidKeys      *VAPIDKeys
 	pushStore      *PushSubscriptionStore
 	passkeyStore   *PasskeyStore          // nil when dataDir is empty
+	ntfyStore      *NtfyStore             // nil when dataDir is empty
 	webAuthn       *webauthn.WebAuthn     // nil when ORIGIN is not set
 	ntfyConfig     *NtfyConfig            // nil when NTFY_URL is not set
 	pushAlways     bool                   // send web push even when browser tabs are open
@@ -100,9 +101,11 @@ func WithSessionKey(key string) ServerOption {
 func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts ...ServerOption) *Server {
 	var pushStore *PushSubscriptionStore
 	var passkeyStore *PasskeyStore
+	var ntfyStore *NtfyStore
 	if dataDir != "" {
 		pushStore = NewPushSubscriptionStore(dataDir)
 		passkeyStore = NewPasskeyStore(dataDir)
+		ntfyStore = NewNtfyStore(dataDir)
 	}
 
 	s := &Server{
@@ -110,9 +113,13 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		vapidKeys:    vapidKeys,
 		pushStore:    pushStore,
 		passkeyStore: passkeyStore,
+		ntfyStore:    ntfyStore,
 		pushAlways:   true,
 		logger:       logger,
 		mux:          http.NewServeMux(),
+	}
+	if ntfyStore != nil {
+		s.sessions.SetNtfyStore(ntfyStore)
 	}
 	for _, opt := range opts {
 		opt(s)
