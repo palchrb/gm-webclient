@@ -1348,15 +1348,7 @@ function handleIncomingMessage(msg) {
                 // Reaction messages aren't shown in timeline — update target's badges
                 const r = extractReaction(msg);
                 if (r) {
-                    const target = findReactionTarget(r, msg);
-                    if (target) {
-                        // Clear matching optimistic reaction (server confirmed it)
-                        if (target._reactions) {
-                            const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
-                            if (idx >= 0) target._reactions.splice(idx, 1);
-                        }
-                        updateMessageReactions(target.messageId);
-                    }
+                    resolveAndApplyReaction(r, msg, convId);
                 }
             } else {
                 appendMessageToDOM(msg);
@@ -1502,31 +1494,49 @@ function findReactionTarget(r, reactionMsg) {
             target = candidate;
         }
     }
-    if (!target && mediaUUID) {
-        // Dump full media-bearing messages so we can see which field Garmin
-        // actually uses for the iOS PHAsset-style UUIDs in reactions.
-        const mediaMessages = state.messages.filter(m => !isReactionMessage(m) && (m.mediaId || m.uuid || m.otaUuid));
-        console.warn('Reaction media match failed', {
-            mediaUUID,
-            targetText: r.targetText,
-            stateMessageCount: state.messages.length,
-            mediaCandidateCount: mediaMessages.length,
-        });
-        // Log each candidate as a separate entry so DevTools shows them expanded.
-        for (const m of mediaMessages.slice(-10)) {
-            console.warn('  candidate:', JSON.stringify({
-                messageId: m.messageId,
-                mediaId: m.mediaId,
-                uuid: m.uuid,
-                otaUuid: m.otaUuid,
-                parentMessageId: m.parentMessageId,
-                mediaType: m.mediaType,
-                from: m.from,
-                sentAt: m.sentAt,
-            }));
+    return target;
+}
+
+// Resolve a reaction to its target and update the UI.
+//
+// SignalR-pushed media messages may have a null `uuid` field, but the REST
+// conversation detail endpoint always populates it. So when matching against
+// state.messages fails — typically for caption-less media reactions on images
+// the user just sent from another client — refetch the conversation, merge
+// in the populated fields, and retry. This mirrors how the matrix-garmin
+// bridge handles the same data discrepancy via resolveMediaMessageDetails.
+async function resolveAndApplyReaction(r, reactionMsg, convId) {
+    let target = findReactionTarget(r, reactionMsg);
+    if (!target && extractReactionMediaUUID(r.targetText)) {
+        try {
+            const resp = await api(`/api/conversations/${convId}?limit=200`);
+            const refreshed = resp.messages || [];
+            // Merge refreshed fields into existing entries by messageId.
+            // REST values take precedence so missing uuid/mediaId from SignalR
+            // get populated.
+            const byId = {};
+            for (const m of state.messages) byId[m.messageId] = m;
+            for (const m of refreshed) {
+                byId[m.messageId] = Object.assign({}, byId[m.messageId] || {}, m);
+            }
+            state.messages = Object.values(byId).sort(
+                (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
+            );
+            cache.set('msgs_' + convId, state.messages);
+            target = findReactionTarget(r, reactionMsg);
+        } catch (e) {
+            console.error('Reaction refetch failed:', e);
         }
     }
-    return target;
+
+    if (!target) return;
+
+    // Clear matching optimistic reaction (server confirmed it)
+    if (target._reactions) {
+        const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
+        if (idx >= 0) target._reactions.splice(idx, 1);
+    }
+    updateMessageReactions(target.messageId);
 }
 
 function renderMessages() {
