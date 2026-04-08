@@ -85,12 +85,12 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 		message = payload["body"]
 	}
 
-	// Use the sender phone as the ntfy title when available; fall back to
-	// the generic app name. This gives the notification a "who sent it"
-	// header even when FullText is off for privacy.
+	// Prefix the sender with "Garmin: " so the notification is unambiguously
+	// recognisable in a notification tray alongside SMS/iMessage/etc.
+	// Falls back to the generic app name if the sender field is unavailable.
 	title := payload["title"]
 	if from := payload["from"]; from != "" {
-		title = from
+		title = "Garmin: " + from
 	}
 
 	ntfyPayload := map[string]any{
@@ -113,6 +113,12 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 			clickURL += "#conversation/" + convId
 		}
 		ntfyPayload["click"] = clickURL
+
+		// Point the ntfy client at our app icon so the notification shows
+		// the GM monogram instead of the default ntfy bell. The icon URL
+		// must be publicly reachable from wherever the user's ntfy client
+		// runs — we reuse ClickURL (the configured ORIGIN) for that.
+		ntfyPayload["icon"] = strings.TrimRight(srv.ntfyConfig.ClickURL, "/") + "/icon.svg"
 	}
 
 	body, err := json.Marshal(ntfyPayload)
