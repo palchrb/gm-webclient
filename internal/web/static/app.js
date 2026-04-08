@@ -1231,15 +1231,40 @@ function updateRecordingDuration() {
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
-// Lightweight catch-up to pull any messages that arrived while the SignalR
-// stream was paused (no active tabs) or the SSE connection had an error.
-// Called from several triggers (visibilitychange, focus, interval, reconnect).
+// Debounced catch-up. SignalR + FCM give us messages in real time; catch-up
+// is only needed when the SignalR stream was paused (no active tabs) or
+// interrupted. A short debounce window collapses duplicate triggers
+// (visibilitychange fires alongside focus in some browsers, and we may get
+// a "connected" SSE event at the same time).
+let _catchUpPending = 0;
+let _catchUpLastRun = 0;
+let _catchUpLastHiddenAt = 0;
+const CATCHUP_DEBOUNCE_MS = 2000;
+const CATCHUP_MIN_INTERVAL_MS = 10000;
+const CONVERSATIONS_REFRESH_IF_AWAY_MS = 5 * 60 * 1000;
+
 function runCatchUp() {
     if (!state.loggedIn) return;
-    loadConversations();
-    if (state.currentConversationId) {
-        catchUpConversation(state.currentConversationId);
-    }
+    // Debounce: schedule a single run a short time after the last trigger.
+    clearTimeout(_catchUpPending);
+    _catchUpPending = setTimeout(() => {
+        _catchUpPending = 0;
+        const now = Date.now();
+        // Throttle: don't run if we already ran recently.
+        if (now - _catchUpLastRun < CATCHUP_MIN_INTERVAL_MS) return;
+        _catchUpLastRun = now;
+
+        // Only re-fetch the whole conversation list when the user has been
+        // away long enough that something might have been archived/created.
+        // Otherwise catchUpConversation on the currently-open chat is enough.
+        const awayMs = _catchUpLastHiddenAt ? now - _catchUpLastHiddenAt : 0;
+        if (awayMs > CONVERSATIONS_REFRESH_IF_AWAY_MS) {
+            loadConversations();
+        }
+        if (state.currentConversationId) {
+            catchUpConversation(state.currentConversationId);
+        }
+    }, CATCHUP_DEBOUNCE_MS);
 }
 
 function connectSSE() {
@@ -1273,22 +1298,19 @@ function connectSSE() {
     });
 }
 
-// Wire up cross-tab/focus/interval catch-up exactly once per page load.
-// visibilitychange: fires when the tab becomes visible again.
-// focus:            fires when the window regains focus (some browsers).
-// interval:         safety net — every 60s while logged in.
+// Wire up visibility-based catch-up exactly once per page load.
+// We rely on visibilitychange alone — focus + visibilitychange usually fire
+// together, and with SignalR real-time push we don't need periodic polling.
 function setupCatchUpTriggers() {
     if (window.__catchUpWired) return;
     window.__catchUpWired = true;
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) runCatchUp();
+        if (document.hidden) {
+            _catchUpLastHiddenAt = Date.now();
+        } else {
+            runCatchUp();
+        }
     });
-    window.addEventListener('focus', () => {
-        runCatchUp();
-    });
-    setInterval(() => {
-        if (!document.hidden) runCatchUp();
-    }, 60000);
 }
 
 // Track unread messages per conversation
