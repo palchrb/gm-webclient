@@ -230,6 +230,7 @@ func (s *Server) registerRoutes() {
 	// ntfy push notification endpoints
 	s.mux.HandleFunc("GET /api/ntfy/info", s.requireSession(s.handleGetNtfyInfo))
 	s.mux.HandleFunc("POST /api/ntfy/subscribe", s.requireSession(s.handleNtfySubscribe))
+	s.mux.HandleFunc("POST /api/ntfy/fulltext", s.requireSession(s.handleSetNtfyFullText))
 
 	// SSE events (session required)
 	s.mux.HandleFunc("GET /api/events", s.requireSession(s.handleSSE))

@@ -74,14 +74,28 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 
 	topic := NtfyTopicForPhone(srv.ntfyConfig.HMACKey, acct.Phone)
 
+	// Per-user FullText override takes precedence over the server-wide default.
+	fullText := srv.ntfyConfig.FullMessage
+	if acct.NtfyFullText != nil {
+		fullText = *acct.NtfyFullText
+	}
+
 	message := "New message"
-	if srv.ntfyConfig.FullMessage {
+	if fullText {
 		message = payload["body"]
+	}
+
+	// Use the sender phone as the ntfy title when available; fall back to
+	// the generic app name. This gives the notification a "who sent it"
+	// header even when FullText is off for privacy.
+	title := payload["title"]
+	if from := payload["from"]; from != "" {
+		title = from
 	}
 
 	ntfyPayload := map[string]any{
 		"topic":    topic,
-		"title":    payload["title"],
+		"title":    title,
 		"message":  message,
 		"priority": 4,
 		"tags":     []string{"speech_balloon"},
@@ -150,13 +164,25 @@ func (srv *Server) handleGetNtfyInfo(w http.ResponseWriter, r *http.Request) {
 	host := strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://")
 	appURL := "ntfy://" + host + "/" + topic + "?display=Garmin+Messenger"
 
+	// Resolve effective FullText: per-user override takes precedence,
+	// otherwise fall back to the server-wide default.
+	effectiveFullText := srv.ntfyConfig.FullMessage
+	fullTextIsOverride := false
+	if session.Account.NtfyFullText != nil {
+		effectiveFullText = *session.Account.NtfyFullText
+		fullTextIsOverride = true
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":   true,
-		"subscribed": session.Account.NtfyEnabled,
-		"topic":     topic,
-		"server":    baseURL,
-		"appUrl":    appURL,
-		"userId":    userID,
+		"enabled":            true,
+		"subscribed":         session.Account.NtfyEnabled,
+		"topic":              topic,
+		"server":             baseURL,
+		"appUrl":             appURL,
+		"userId":             userID,
+		"fullText":           effectiveFullText,
+		"fullTextIsOverride": fullTextIsOverride,
+		"serverDefaultFullText": srv.ntfyConfig.FullMessage,
 	})
 }
 
@@ -178,13 +204,54 @@ func (srv *Server) handleNtfySubscribe(w http.ResponseWriter, r *http.Request) {
 
 	session.Account.NtfyEnabled = req.Enabled
 
-	// Persist as a per-phone preference (survives logout/restart).
+	// Persist as a per-phone preference (survives logout/restart), preserving
+	// any existing FullText override.
 	if srv.ntfyStore != nil {
-		if err := srv.ntfyStore.Save(session.Phone(), req.Enabled); err != nil {
+		prefs := NtfyPrefs{Enabled: req.Enabled, FullText: session.Account.NtfyFullText}
+		if err := srv.ntfyStore.Save(session.Phone(), prefs); err != nil {
 			srv.logger.Warn("Failed to persist ntfy preference", "phone", session.Phone(), "error", err)
 		}
 	}
 
 	srv.logger.Info("ntfy subscription changed", "phone", session.Phone(), "enabled", req.Enabled)
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
+}
+
+// handleSetNtfyFullText sets the per-user full-text override for ntfy
+// notifications. Request body accepts {"fullText": true|false} to override
+// the server default, or {"fullText": null} to clear the override.
+func (srv *Server) handleSetNtfyFullText(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r.Context())
+	if session == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		FullText *bool `json:"fullText"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+
+	session.Account.NtfyFullText = req.FullText
+
+	if srv.ntfyStore != nil {
+		prefs := NtfyPrefs{Enabled: session.Account.NtfyEnabled, FullText: req.FullText}
+		if err := srv.ntfyStore.Save(session.Phone(), prefs); err != nil {
+			srv.logger.Warn("Failed to persist ntfy fullText preference", "phone", session.Phone(), "error", err)
+		}
+	}
+
+	// Compute effective value for the response.
+	effective := srv.ntfyConfig != nil && srv.ntfyConfig.FullMessage
+	if req.FullText != nil {
+		effective = *req.FullText
+	}
+	srv.logger.Info("ntfy fullText changed", "phone", session.Phone(), "override", req.FullText, "effective", effective)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"fullText":           effective,
+		"fullTextIsOverride": req.FullText != nil,
+	})
 }

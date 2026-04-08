@@ -47,7 +47,8 @@ type UserAccount struct {
 	PushSubscriptions map[string]*webpush.Subscription
 	pushMu            sync.RWMutex
 
-	NtfyEnabled bool // user opted in to ntfy push notifications
+	NtfyEnabled  bool  // user opted in to ntfy push notifications
+	NtfyFullText *bool // per-user override for full-text vs "New message"; nil = use server default
 
 	pushDedup pushDedupCache // dedup messageIds across SignalR + FCM push paths
 
@@ -218,9 +219,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		acct.fcmStarted = false
 		acct.mu.Unlock()
 
-		// Refresh ntfy preference from disk in case it was updated externally.
+		// Refresh ntfy preferences from disk in case they were updated externally.
 		if sm.ntfyStore != nil {
-			acct.NtfyEnabled = sm.ntfyStore.Load(phone)
+			prefs := sm.ntfyStore.Load(phone)
+			acct.NtfyEnabled = prefs.Enabled
+			acct.NtfyFullText = prefs.FullText
 		}
 
 		sm.wireAccountEvents(acct, logger)
@@ -248,9 +251,11 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		SSE:     NewSSEBroker(),
 	}
 
-	// Restore per-phone ntfy preference (survives logout, session expiry, restarts).
+	// Restore per-phone ntfy preferences (survives logout, session expiry, restarts).
 	if sm.ntfyStore != nil {
-		acct.NtfyEnabled = sm.ntfyStore.Load(phone)
+		prefs := sm.ntfyStore.Load(phone)
+		acct.NtfyEnabled = prefs.Enabled
+		acct.NtfyFullText = prefs.FullText
 	}
 
 	sm.wireAccountEvents(acct, logger)

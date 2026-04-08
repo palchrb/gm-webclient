@@ -123,6 +123,11 @@ func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 		)
 		return
 	}
+	// Use the sender as the notification title when available so users can
+	// see at a glance who the message is from in the browser notification.
+	if from := payload["from"]; from != "" {
+		payload["title"] = from
+	}
 	srv.logger.Info("sendWebPush: sending notification",
 		"phone", acct.Phone,
 		"title", payload["title"],
@@ -194,6 +199,12 @@ func buildPushPayload(data any, phone string) map[string]string {
 		p := map[string]string{
 			"title":          "Garmin Messenger",
 			"conversationId": msg.ConversationID.String(),
+		}
+		// Include raw sender so downstream (ntfy, web push) can render a
+		// sender-aware title. MessengerApp senders give us an E.164 phone
+		// like "+4740847119"; inReach devices give a Hermes UUID.
+		if msg.From != nil && *msg.From != "" {
+			p["from"] = *msg.From
 		}
 		if msg.MessageBody != nil {
 			p["body"] = *msg.MessageBody
