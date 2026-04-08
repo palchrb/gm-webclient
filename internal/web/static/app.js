@@ -936,11 +936,38 @@ function handleMessageKeydown(event) {
     }
 }
 
-async function markAsRead(convId, msgId) {
-    try {
-        await api(`/api/messages/${convId}/${msgId}/read`, { method: 'POST' });
-    } catch (e) {
-        // Silent fail for read receipts
+// markAsRead is debounced per conversation. Garmin's Status/Read endpoint is
+// monotonic — marking message N as read implicitly marks every earlier
+// message read — so when a burst of messages arrives we only need to send
+// the newest read marker, not one PUT per message. Callers still invoke
+// this per message as usual; we coalesce and flush on a short timer, on
+// visibility change, and on page hide.
+const _pendingReadByConv = {}; // convId -> newest messageId to mark read
+let _readDebounceTimer = 0;
+const READ_DEBOUNCE_MS = 3000;
+
+function markAsRead(convId, msgId) {
+    if (!convId || !msgId) return;
+    // UUID v7 is time-sortable, so a lexicographic compare keeps the newest.
+    const current = _pendingReadByConv[convId];
+    if (!current || msgId > current) {
+        _pendingReadByConv[convId] = msgId;
+    }
+    clearTimeout(_readDebounceTimer);
+    _readDebounceTimer = setTimeout(flushPendingReads, READ_DEBOUNCE_MS);
+}
+
+async function flushPendingReads() {
+    clearTimeout(_readDebounceTimer);
+    _readDebounceTimer = 0;
+    const entries = Object.entries(_pendingReadByConv);
+    for (const [convId] of entries) delete _pendingReadByConv[convId];
+    for (const [convId, msgId] of entries) {
+        try {
+            await api(`/api/messages/${convId}/${msgId}/read`, { method: 'POST' });
+        } catch (e) {
+            // Silent fail for read receipts
+        }
     }
 }
 
@@ -1298,18 +1325,27 @@ function connectSSE() {
     });
 }
 
-// Wire up visibility-based catch-up exactly once per page load.
+// Wire up visibility-based catch-up and read-flush exactly once per page load.
 // We rely on visibilitychange alone — focus + visibilitychange usually fire
 // together, and with SignalR real-time push we don't need periodic polling.
+// When the tab is hidden or the page is closing we immediately flush any
+// pending read receipts so the debounce window doesn't drop them.
 function setupCatchUpTriggers() {
     if (window.__catchUpWired) return;
     window.__catchUpWired = true;
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             _catchUpLastHiddenAt = Date.now();
+            flushPendingReads();
         } else {
             runCatchUp();
         }
+    });
+    // pagehide fires on tab close / navigation away, even when visibilitychange
+    // doesn't (e.g. back-forward cache). Best-effort flush — async fetch may
+    // not complete but it usually does for short requests.
+    window.addEventListener('pagehide', () => {
+        flushPendingReads();
     });
 }
 
