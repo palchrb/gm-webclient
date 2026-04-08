@@ -123,10 +123,10 @@ func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 		)
 		return
 	}
-	// Use the sender as the notification title when available so users can
-	// see at a glance who the message is from in the browser notification.
+	// Prefix the sender with "Garmin: " so the browser notification is
+	// unambiguously recognisable alongside other notifications.
 	if from := payload["from"]; from != "" {
-		payload["title"] = from
+		payload["title"] = "Garmin: " + from
 	}
 	srv.logger.Info("sendWebPush: sending notification",
 		"phone", acct.Phone,

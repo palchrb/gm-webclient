@@ -85,12 +85,12 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 		message = payload["body"]
 	}
 
-	// Use the sender phone as the ntfy title when available; fall back to
-	// the generic app name. This gives the notification a "who sent it"
-	// header even when FullText is off for privacy.
+	// Prefix the sender with "Garmin: " so the notification is unambiguously
+	// recognisable in a notification tray alongside SMS/iMessage/etc.
+	// Falls back to the generic app name if the sender field is unavailable.
 	title := payload["title"]
 	if from := payload["from"]; from != "" {
-		title = from
+		title = "Garmin: " + from
 	}
 
 	ntfyPayload := map[string]any{
