@@ -55,6 +55,7 @@ async function init() {
             showChatView();
             await loadConversations();
             connectSSE();
+            setupCatchUpTriggers();
             setupPushNotifications();
             setupNtfyButton();
             setupClipboardPaste();
@@ -107,6 +108,7 @@ function enterChat(resp) {
     showChatView();
     loadConversations();
     connectSSE();
+    setupCatchUpTriggers();
     setupPushNotifications();
     setupNtfyButton();
     setupClipboardPaste();
@@ -1229,6 +1231,17 @@ function updateRecordingDuration() {
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
+// Lightweight catch-up to pull any messages that arrived while the SignalR
+// stream was paused (no active tabs) or the SSE connection had an error.
+// Called from several triggers (visibilitychange, focus, interval, reconnect).
+function runCatchUp() {
+    if (!state.loggedIn) return;
+    loadConversations();
+    if (state.currentConversationId) {
+        catchUpConversation(state.currentConversationId);
+    }
+}
+
 function connectSSE() {
     if (state.eventSource) state.eventSource.close();
 
@@ -1247,6 +1260,8 @@ function connectSSE() {
 
     es.addEventListener('connected', () => {
         console.log('SignalR connected');
+        // SignalR just (re)connected to Garmin — pull anything we missed.
+        runCatchUp();
     });
 
     es.addEventListener('disconnected', () => {
@@ -1256,16 +1271,24 @@ function connectSSE() {
     es.addEventListener('error', (e) => {
         console.error('SSE error, will auto-reconnect');
     });
+}
 
-    // Catch up on tab focus — lightweight diff, no full re-render
+// Wire up cross-tab/focus/interval catch-up exactly once per page load.
+// visibilitychange: fires when the tab becomes visible again.
+// focus:            fires when the window regains focus (some browsers).
+// interval:         safety net — every 60s while logged in.
+function setupCatchUpTriggers() {
+    if (window.__catchUpWired) return;
+    window.__catchUpWired = true;
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && state.loggedIn) {
-            loadConversations();
-            if (state.currentConversationId) {
-                catchUpConversation(state.currentConversationId);
-            }
-        }
+        if (!document.hidden) runCatchUp();
     });
+    window.addEventListener('focus', () => {
+        runCatchUp();
+    });
+    setInterval(() => {
+        if (!document.hidden) runCatchUp();
+    }, 60000);
 }
 
 // Track unread messages per conversation
@@ -1348,7 +1371,15 @@ function handleIncomingMessage(msg) {
                 // Reaction messages aren't shown in timeline — update target's badges
                 const r = extractReaction(msg);
                 if (r) {
-                    resolveAndApplyReaction(r, msg, convId);
+                    const target = findReactionTarget(r, msg);
+                    if (target) {
+                        // Clear matching optimistic reaction (server confirmed it)
+                        if (target._reactions) {
+                            const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
+                            if (idx >= 0) target._reactions.splice(idx, 1);
+                        }
+                        updateMessageReactions(target.messageId);
+                    }
                 }
             } else {
                 appendMessageToDOM(msg);
@@ -1427,21 +1458,32 @@ function renderConversations() {
     list.innerHTML = html;
 }
 
-// Detect Garmin ZWS-encoded reaction: \u200b{emoji}\u200b to \u200a{text}\u200a
+// Detect Garmin ZWS-encoded reaction.
+// Add format:    \u200b{emoji}\u200b {locale "to"} \u200a{text}\u200a
+// Remove format: {locale "Removed"} \u200c{emoji}\u200c {locale "from"} \u200a{text}\u200a
+// The two use different ZWS chars: ADD uses U+200B (zero-width space),
+// REMOVE uses U+200C (zero-width non-joiner).
 function isReactionMessage(msg) {
     const body = msg.messageBody || '';
-    return body.startsWith('\u200b');
+    if (body.startsWith('\u200b')) return true;
+    return /\u200c.+?\u200c/.test(body);
 }
 
 function extractReaction(msg) {
     const body = msg.messageBody || '';
-    // Match ZWS-delimited emoji and hair-space-delimited target text,
-    // ignoring the localized connector word(s) in between.
-    // Strips optional guillemets «» that iOS may add.
-    var match = body.match(/^\u200b(.+?)\u200b .+[«]?\u200a(.*?)\u200a[»]?$/);
-    if (!match) return null;
-    var targetText = match[2].replace(/\u2026$/, '').replace(/\.\.\.$/,'');
-    return { emoji: match[1], targetText: targetText };
+    // Add: starts with \u200b emoji \u200b, connector word(s), optional «, \u200a target \u200a, optional »
+    var addMatch = body.match(/^\u200b(.+?)\u200b .+[«]?\u200a(.*?)\u200a[»]?$/);
+    if (addMatch) {
+        var targetText = addMatch[2].replace(/\u2026$/, '').replace(/\.\.\.$/, '');
+        return { emoji: addMatch[1], targetText: targetText, removal: false };
+    }
+    // Remove: localized prefix (e.g. "Fjernet "/"Removed "), \u200c emoji \u200c, connector, \u200a target \u200a
+    var removeMatch = body.match(/\u200c(.+?)\u200c .+[«]?\u200a(.*?)\u200a[»]?$/);
+    if (removeMatch) {
+        var targetText = removeMatch[2].replace(/\u2026$/, '').replace(/\.\.\.$/, '');
+        return { emoji: removeMatch[1], targetText: targetText, removal: true };
+    }
+    return null;
 }
 
 // Garmin's native apps "quote" caption-less media in reactions as
@@ -1497,48 +1539,6 @@ function findReactionTarget(r, reactionMsg) {
     return target;
 }
 
-// Resolve a reaction to its target and update the UI.
-//
-// SignalR-pushed media messages may have a null `uuid` field, but the REST
-// conversation detail endpoint always populates it. So when matching against
-// state.messages fails — typically for caption-less media reactions on images
-// the user just sent from another client — refetch the conversation, merge
-// in the populated fields, and retry. This mirrors how the matrix-garmin
-// bridge handles the same data discrepancy via resolveMediaMessageDetails.
-async function resolveAndApplyReaction(r, reactionMsg, convId) {
-    let target = findReactionTarget(r, reactionMsg);
-    if (!target && extractReactionMediaUUID(r.targetText)) {
-        try {
-            const resp = await api(`/api/conversations/${convId}?limit=200`);
-            const refreshed = resp.messages || [];
-            // Merge refreshed fields into existing entries by messageId.
-            // REST values take precedence so missing uuid/mediaId from SignalR
-            // get populated.
-            const byId = {};
-            for (const m of state.messages) byId[m.messageId] = m;
-            for (const m of refreshed) {
-                byId[m.messageId] = Object.assign({}, byId[m.messageId] || {}, m);
-            }
-            state.messages = Object.values(byId).sort(
-                (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
-            );
-            cache.set('msgs_' + convId, state.messages);
-            target = findReactionTarget(r, reactionMsg);
-        } catch (e) {
-            console.error('Reaction refetch failed:', e);
-        }
-    }
-
-    if (!target) return;
-
-    // Clear matching optimistic reaction (server confirmed it)
-    if (target._reactions) {
-        const idx = target._reactions.findIndex(rx => rx.emoji === r.emoji && rx.isMine);
-        if (idx >= 0) target._reactions.splice(idx, 1);
-    }
-    updateMessageReactions(target.messageId);
-}
-
 function renderMessages() {
     const container = document.getElementById('messages');
     if (state.messages.length === 0) {
@@ -1546,26 +1546,36 @@ function renderMessages() {
         return;
     }
 
-    // First pass: collect reactions and map them to target messages.
-    // Match by body text, preferring the message closest in time to the reaction.
-    const reactions = {}; // messageId -> [{emoji, from}]
+    // First pass: collect reaction events (add + remove), sort chronologically,
+    // apply to compute the current reaction state per target message.
     const reactionMsgIds = new Set();
-
+    const eventsByTarget = {}; // targetMessageId -> events[]
     for (const msg of state.messages) {
         if (!isReactionMessage(msg)) continue;
+        reactionMsgIds.add(msg.messageId);
         const r = extractReaction(msg);
         if (!r) continue;
-        reactionMsgIds.add(msg.messageId);
-
         const target = findReactionTarget(r, msg);
-        if (target) {
-            if (!reactions[target.messageId]) reactions[target.messageId] = [];
-            reactions[target.messageId].push({
-                emoji: r.emoji,
-                from: msg.from,
-                isMine: isMine(msg),
-            });
+        if (!target) continue;
+        if (!eventsByTarget[target.messageId]) eventsByTarget[target.messageId] = [];
+        eventsByTarget[target.messageId].push({
+            emoji: r.emoji,
+            from: msg.from,
+            isMine: isMine(msg),
+            removal: r.removal,
+            time: new Date(msg.sentAt || msg.receivedAt || 0).getTime(),
+        });
+    }
+    const reactions = {}; // messageId -> [{emoji, from, isMine}]
+    for (const targetId in eventsByTarget) {
+        const events = eventsByTarget[targetId].sort((a, b) => a.time - b.time);
+        const active = new Map();
+        for (const e of events) {
+            const key = e.emoji + '|' + (e.from || '');
+            if (e.removal) active.delete(key);
+            else active.set(key, { emoji: e.emoji, from: e.from, isMine: e.isMine });
         }
+        reactions[targetId] = Array.from(active.values());
     }
 
     // Second pass: render messages, skipping reaction messages
@@ -2035,20 +2045,34 @@ function updateMessageStatus(msgId) {
 }
 
 function collectReactionsForMessage(targetMsg) {
-    const results = [];
-    // Use findReactionTarget so this matches the same way as the initial
-    // render in renderMessages — handles both text reactions AND media-UUID
-    // reactions on caption-less images/audio.
+    // Collect all reaction events targeting this message, then apply add/remove
+    // in chronological order to compute the current state.
+    const events = [];
     for (const msg of state.messages) {
         if (!isReactionMessage(msg)) continue;
         const r = extractReaction(msg);
         if (!r || !r.targetText) continue;
         const target = findReactionTarget(r, msg);
-        if (target && target.messageId === targetMsg.messageId) {
-            results.push({ emoji: r.emoji, from: msg.from, isMine: isMine(msg) });
+        if (!target || target.messageId !== targetMsg.messageId) continue;
+        events.push({
+            emoji: r.emoji,
+            from: msg.from,
+            isMine: isMine(msg),
+            removal: r.removal,
+            time: new Date(msg.sentAt || msg.receivedAt || 0).getTime(),
+        });
+    }
+    events.sort((a, b) => a.time - b.time);
+    const active = new Map();
+    for (const e of events) {
+        const key = e.emoji + '|' + (e.from || '');
+        if (e.removal) {
+            active.delete(key);
+        } else {
+            active.set(key, { emoji: e.emoji, from: e.from, isMine: e.isMine });
         }
     }
-    return results;
+    return Array.from(active.values());
 }
 
 function updateMessageReactions(msgId) {
@@ -2310,7 +2334,14 @@ async function sendReaction(messageId, emoji) {
     const to = getRecipientPhones(state.currentConversationId);
     if (to.length === 0) return;
 
-    const targetBody = msg.messageBody || '';
+    // For caption-less media, Garmin native apps use "\u2009{icon}({mediaId})"
+    // as the target text so the reaction renders as a quote of the media.
+    // Mirror that format so iOS/Garmin clients can resolve our reactions too.
+    let targetBody = msg.messageBody || '';
+    if (!targetBody && msg.mediaId && msg.mediaType) {
+        const icon = msg.mediaType === 'AudioOgg' ? '🎤' : '📷';
+        targetBody = '\u2009' + icon + '(' + String(msg.mediaId).toUpperCase() + ')';
+    }
 
     // Optimistic: show reaction badge immediately (surgical DOM update)
     if (!msg._reactions) msg._reactions = [];
