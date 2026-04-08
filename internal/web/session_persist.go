@@ -175,8 +175,8 @@ func (sm *SessionManager) RestoreSessions(store *SessionStore, logger *slog.Logg
 			// over so future logins/restarts pick it up reliably.
 			if sm.ntfyStore == nil {
 				session.Account.NtfyEnabled = entry.NtfyEnabled
-			} else if entry.NtfyEnabled && !sm.ntfyStore.Load(entry.Phone) {
-				if err := sm.ntfyStore.Save(entry.Phone, true); err != nil {
+			} else if entry.NtfyEnabled && !sm.ntfyStore.Load(entry.Phone).Enabled {
+				if err := sm.ntfyStore.Save(entry.Phone, NtfyPrefs{Enabled: true}); err != nil {
 					sm.logger.Warn("Failed to migrate ntfy preference", "phone", entry.Phone, "error", err)
 				} else {
 					sm.logger.Info("Migrated ntfy preference to per-phone store", "phone", entry.Phone)

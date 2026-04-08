@@ -2570,49 +2570,78 @@ async function enableNtfyOnServer() {
 function openNtfySubscribe() {
     if (!ntfyInfo) return;
 
+    // Enable server-side ntfy push the first time the modal is opened.
+    enableNtfyOnServer();
+    hideNotificationMenu();
+
     var ua = navigator.userAgent || '';
     var isAndroid = /android/i.test(ua);
     var isIOS = /iP(hone|ad|od)/i.test(ua);
 
-    // Enable server-side ntfy push when user subscribes
-    enableNtfyOnServer();
-
-    // Android: use ntfy:// deep link to open app directly
-    if (isAndroid && ntfyInfo.appUrl) {
-        hideNotificationMenu();
-        window.location.href = ntfyInfo.appUrl;
-        return;
-    }
-
-    // Desktop: open ntfy web interface for the topic
-    if (!isIOS) {
-        hideNotificationMenu();
-        window.open(ntfyInfo.server + '/' + ntfyInfo.topic, '_blank');
-        return;
-    }
-
-    // iOS: show topic info with copy button (no deep link support)
-    hideNotificationMenu();
-
     var server = ntfyInfo.server === 'https://ntfy.sh' ? '' : ntfyInfo.server;
-    var instructions = server
-        ? 'Open the ntfy app, tap +, set server to <b>' + server + '</b> and paste the topic below.'
+    var iosInstructions = server
+        ? 'Open the ntfy app, tap +, set server to <b>' + escapeHtml(server) + '</b> and paste the topic below.'
         : 'Open the ntfy app, tap + and paste the topic below.';
+
+    // Action row: open the ntfy app on Android, the web UI on desktop,
+    // or show the iOS instructions + copy flow.
+    var actionHtml = '';
+    if (isAndroid && ntfyInfo.appUrl) {
+        actionHtml = '<a class="btn-primary" style="display:inline-block;text-decoration:none" href="' + escapeHtml(ntfyInfo.appUrl) + '">Open in ntfy app</a>';
+    } else if (!isIOS) {
+        actionHtml = '<a class="btn-primary" style="display:inline-block;text-decoration:none" href="' + escapeHtml(ntfyInfo.server + '/' + ntfyInfo.topic) + '" target="_blank" rel="noopener">Open ntfy web</a>';
+    }
+
+    // Full-text toggle (per-user, overrides server default).
+    var fullTextChecked = ntfyInfo.fullText ? 'checked' : '';
+    var serverDefaultNote = ntfyInfo.fullTextIsOverride
+        ? 'Server default: ' + (ntfyInfo.serverDefaultFullText ? 'on' : 'off')
+        : 'Using server default';
 
     var overlay = document.createElement('div');
     overlay.className = 'modal';
     overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
     overlay.innerHTML =
         '<div class="modal-content">' +
-            '<h3>Subscribe via ntfy</h3>' +
-            '<p style="font-size:0.9em;margin-bottom:12px">' + instructions + '</p>' +
-            '<div style="display:flex;gap:8px;align-items:center">' +
-                '<input type="text" readonly value="' + ntfyInfo.topic + '" style="flex:1;font-family:monospace;font-size:0.95em" id="ntfy-topic-input">' +
-                '<button class="btn-primary" onclick="copyNtfyTopic()">Copy</button>' +
+            '<h3>ntfy notifications</h3>' +
+            (isIOS ? '<p style="font-size:0.9em;margin-bottom:12px">' + iosInstructions + '</p>' : '') +
+            '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">' +
+                '<input type="text" readonly value="' + escapeHtml(ntfyInfo.topic) + '" style="flex:1;font-family:monospace;font-size:0.95em" id="ntfy-topic-input">' +
+                '<button class="btn-secondary" onclick="copyNtfyTopic()">Copy</button>' +
             '</div>' +
-            '<p id="ntfy-copied" class="hidden" style="color:var(--accent);font-size:0.85em;margin-top:6px">Copied!</p>' +
+            '<p id="ntfy-copied" class="hidden" style="color:var(--accent);font-size:0.85em;margin-bottom:12px">Copied!</p>' +
+            '<label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer">' +
+                '<input type="checkbox" id="ntfy-fulltext" ' + fullTextChecked + ' onchange="setNtfyFullText(this.checked)">' +
+                '<span>Include full message text in notifications</span>' +
+            '</label>' +
+            '<p id="ntfy-fulltext-note" style="font-size:0.8em;color:var(--text-muted);margin:0 0 12px 24px">' + escapeHtml(serverDefaultNote) + '</p>' +
+            (actionHtml ? '<div style="margin-top:4px">' + actionHtml + '</div>' : '') +
         '</div>';
     document.body.appendChild(overlay);
+}
+
+async function setNtfyFullText(fullText) {
+    try {
+        var resp = await api('/api/ntfy/fulltext', {
+            method: 'POST',
+            body: { fullText: fullText },
+        });
+        if (ntfyInfo) {
+            ntfyInfo.fullText = resp.fullText;
+            ntfyInfo.fullTextIsOverride = resp.fullTextIsOverride;
+        }
+        var note = document.getElementById('ntfy-fulltext-note');
+        if (note) {
+            note.textContent = resp.fullTextIsOverride
+                ? 'Server default: ' + (ntfyInfo && ntfyInfo.serverDefaultFullText ? 'on' : 'off')
+                : 'Using server default';
+        }
+    } catch (e) {
+        console.error('Failed to update ntfy fullText:', e);
+        // Revert checkbox on error
+        var cb = document.getElementById('ntfy-fulltext');
+        if (cb) cb.checked = !fullText;
+    }
 }
 
 function copyNtfyTopic() {
