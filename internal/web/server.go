@@ -233,6 +233,7 @@ func (s *Server) registerRoutes() {
 
 	// SSE events (session required)
 	s.mux.HandleFunc("GET /api/events", s.requireSession(s.handleSSE))
+	s.mux.HandleFunc("POST /api/session/visibility", s.requireSession(s.handleSetVisibility))
 
 	// Serve static files for everything else
 	s.mux.Handle("/", fileServer)

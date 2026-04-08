@@ -1,4 +1,12 @@
 // ─── State ───────────────────────────────────────────────────────────────────
+// Stable per-page-load identifier so the server can track this specific tab's
+// visibility state independently of any reconnects. Used for the SSE channel
+// and the /api/session/visibility endpoint.
+const clientId = (function() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    return 'c-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+})();
+
 const state = {
     loggedIn: false,
     phone: null,
@@ -1297,7 +1305,7 @@ function runCatchUp() {
 function connectSSE() {
     if (state.eventSource) state.eventSource.close();
 
-    const es = new EventSource('/api/events');
+    const es = new EventSource('/api/events?clientId=' + encodeURIComponent(clientId));
     state.eventSource = es;
 
     es.addEventListener('message', (e) => {
@@ -1325,11 +1333,35 @@ function connectSSE() {
     });
 }
 
+// Tell the server this tab's visibility state. The SSE connection stays open
+// (so resume is instant) but the server's push-decision logic only counts
+// visible subscribers — so push fires immediately when we go hidden.
+//
+// On hidden we use sendBeacon because iOS Safari freezes JS very quickly
+// after the visibilitychange event; sendBeacon is queued by the browser and
+// guaranteed-best-effort delivered even after the tab is suspended.
+// On visible we use a normal fetch since we know the tab is alive again.
+function reportVisibility(visible) {
+    const payload = JSON.stringify({ clientId: clientId, visible: visible });
+    if (!visible && navigator.sendBeacon) {
+        try {
+            navigator.sendBeacon('/api/session/visibility', new Blob([payload], { type: 'application/json' }));
+            return;
+        } catch (e) { /* fall through to fetch */ }
+    }
+    fetch('/api/session/visibility', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+    }).catch(() => {});
+}
+
 // Wire up visibility-based catch-up and read-flush exactly once per page load.
-// We rely on visibilitychange alone — focus + visibilitychange usually fire
-// together, and with SignalR real-time push we don't need periodic polling.
-// When the tab is hidden or the page is closing we immediately flush any
-// pending read receipts so the debounce window doesn't drop them.
+// On hidden: tell the server we're hidden (push starts firing), flush pending
+// reads so they don't sit in the debounce queue.
+// On visible: tell the server we're back, run catch-up to grab anything that
+// arrived while we were away.
 function setupCatchUpTriggers() {
     if (window.__catchUpWired) return;
     window.__catchUpWired = true;
@@ -1337,15 +1369,19 @@ function setupCatchUpTriggers() {
         if (document.hidden) {
             _catchUpLastHiddenAt = Date.now();
             flushPendingReads();
+            reportVisibility(false);
         } else {
+            reportVisibility(true);
             runCatchUp();
         }
     });
     // pagehide fires on tab close / navigation away, even when visibilitychange
-    // doesn't (e.g. back-forward cache). Best-effort flush — async fetch may
-    // not complete but it usually does for short requests.
+    // doesn't (e.g. back-forward cache). Best-effort flush of pending reads,
+    // and a final visibility=false beacon so the server doesn't have to wait
+    // for the SSE TCP connection to drop before push takes over.
     window.addEventListener('pagehide', () => {
         flushPendingReads();
+        reportVisibility(false);
     });
 }
 
