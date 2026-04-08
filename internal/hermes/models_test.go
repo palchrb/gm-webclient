@@ -617,6 +617,52 @@ func TestMessageModel_UnmarshalJSON_FCM(t *testing.T) {
 	assert.Equal(t, "Hello from FCM", *msg.MessageBody)
 }
 
+func TestMessageModel_UnmarshalJSON_FCMSenderAddresses(t *testing.T) {
+	// Real FCM wakeup payload uses "sender" instead of "from" and "addresses"
+	// instead of "to". Also carries a pile of FCM-only metadata that we
+	// ignore but shouldn't flag as unknown. Based on the actual payload
+	// observed in production logs.
+	data := `{
+		"messageGuid": "08de9565-511e-53e7-6045-bd7c38210000",
+		"conversationGuid": "42d32b70-a22e-5946-bbdc-4b78c5a3e1d6",
+		"messageBody": "Cool. Let me know if you need anything.",
+		"sender": "+4740847119",
+		"addresses": ["+4793613444"],
+		"accountId": "e0791de0-a991-5df7-868c-be3adaa7b871",
+		"addressCount": null,
+		"displayAddresses": null,
+		"isMessageCropped": false,
+		"mtmsn": "0"
+	}`
+
+	var msg MessageModel
+	require.NoError(t, json.Unmarshal([]byte(data), &msg))
+
+	require.NotNil(t, msg.From, "sender should be backfilled into From")
+	assert.Equal(t, "+4740847119", *msg.From)
+	assert.Equal(t, []string{"+4793613444"}, msg.To, "addresses should be backfilled into To")
+	// FCM-only metadata fields should not leak into UnknownFields (which
+	// would spam the logs with a protocol-drift warning on every push).
+	assert.Empty(t, msg.UnknownFields, "FCM metadata should be known, not flagged")
+}
+
+func TestMessageModel_UnmarshalJSON_RestFromWinsOverFCMSender(t *testing.T) {
+	// If both "from" and "sender" are present (unlikely but defensive),
+	// the canonical REST field wins — the FCM alias only backfills when
+	// the primary field is empty.
+	data := `{
+		"messageGuid": "11111111-2222-3333-4444-555555555555",
+		"conversationGuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		"from": "+4711111111",
+		"sender": "+4722222222"
+	}`
+
+	var msg MessageModel
+	require.NoError(t, json.Unmarshal([]byte(data), &msg))
+	require.NotNil(t, msg.From)
+	assert.Equal(t, "+4711111111", *msg.From)
+}
+
 func TestMessageModel_UnmarshalJSON_GuidOverridesId(t *testing.T) {
 	// When both variants are present, Guid fields should take precedence
 	data := `{

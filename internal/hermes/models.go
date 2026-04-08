@@ -215,6 +215,10 @@ var knownMessageModelFields = map[string]bool{
 	"intendedImei": true, "sentVia": true, "originalMtMessageProperties": true,
 	// Alias variants handled in UnmarshalJSON
 	"messageGuid": true, "conversationGuid": true, "parentMessageGuid": true,
+	"sender": true, "addresses": true,
+	// FCM-only metadata we don't act on but shouldn't warn about
+	"accountId": true, "addressCount": true, "displayAddresses": true,
+	"isMessageCropped": true, "mtmsn": true,
 }
 
 // UnmarshalJSON handles both REST API field names (messageId, conversationId)
@@ -224,9 +228,11 @@ var knownMessageModelFields = map[string]bool{
 func (m *MessageModel) UnmarshalJSON(data []byte) error {
 	type Alias MessageModel
 	aux := &struct {
-		MessageGuid       *string `json:"messageGuid"`
-		ConversationGuid  *string `json:"conversationGuid"`
-		ParentMessageGuid *string `json:"parentMessageGuid"`
+		MessageGuid       *string  `json:"messageGuid"`
+		ConversationGuid  *string  `json:"conversationGuid"`
+		ParentMessageGuid *string  `json:"parentMessageGuid"`
+		Sender            *string  `json:"sender"`
+		Addresses         []string `json:"addresses"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -260,6 +266,17 @@ func (m *MessageModel) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("parsing parentMessageGuid: %w", err)
 		}
 		m.ParentMessageID = &parsed
+	}
+	// FCM uses "sender" for the sender address and "addresses" for the
+	// recipient list instead of the REST API's "from" and "to". Backfill
+	// the canonical fields so downstream code (push payload building, own-
+	// message filtering, etc.) sees consistent data regardless of source.
+	if m.From == nil && aux.Sender != nil && *aux.Sender != "" {
+		s := *aux.Sender
+		m.From = &s
+	}
+	if len(m.To) == 0 && len(aux.Addresses) > 0 {
+		m.To = aux.Addresses
 	}
 
 	// Capture any fields not handled by the struct so they're visible in logs.
