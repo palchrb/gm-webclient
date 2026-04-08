@@ -367,9 +367,21 @@ func (c *Client) handleMCSMessage(persistentID string, payload []byte, appData [
 
 	switch e := fcmEvent.(type) {
 	case NewMessage:
+		// Log the raw payload (truncated) and any unknown fields so we can
+		// diagnose schema drift between FCM and SignalR — the two sources
+		// don't always populate the same fields, and push notifications
+		// depend on having msg.From for the sender title.
+		c.logger.Debug("FCM NewMessage raw", "json", truncate(string(data), 10000))
+		if len(e.UnknownFields) > 0 {
+			unknown, _ := json.Marshal(e.UnknownFields)
+			c.logger.Warn("FCM NewMessage: unknown fields in payload — protocol may have drifted",
+				"messageId", e.MessageID,
+				"unknownFields", string(unknown))
+		}
 		c.logger.Info("FCM new message received",
 			"messageId", e.MessageID.String(),
 			"conversationId", e.ConversationID.String(),
+			"hasFrom", e.From != nil && *e.From != "",
 			"hasCallback", c.onMessage != nil,
 		)
 		if c.onMessage != nil {
