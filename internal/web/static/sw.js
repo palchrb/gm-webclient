@@ -22,13 +22,13 @@ self.addEventListener('push', function(event) {
     var title = data.title || 'Garmin Messenger';
     var options = {
         body: data.body || 'New message',
-        icon: '/manifest.json',
-        badge: '/manifest.json',
+        icon: '/icon.svg',
+        badge: '/icon.svg',
         tag: data.conversationId || 'default',
         renotify: true,
         data: {
             conversationId: data.conversationId,
-            url: '/'
+            url: data.conversationId ? '/#conversation/' + data.conversationId : '/'
         }
     };
 

@@ -113,6 +113,12 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 			clickURL += "#conversation/" + convId
 		}
 		ntfyPayload["click"] = clickURL
+
+		// Point the ntfy client at our app icon so the notification shows
+		// the GM monogram instead of the default ntfy bell. The icon URL
+		// must be publicly reachable from wherever the user's ntfy client
+		// runs — we reuse ClickURL (the configured ORIGIN) for that.
+		ntfyPayload["icon"] = strings.TrimRight(srv.ntfyConfig.ClickURL, "/") + "/icon.svg"
 	}
 
 	body, err := json.Marshal(ntfyPayload)
