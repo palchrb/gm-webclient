@@ -100,6 +100,13 @@ func (srv *Server) sendNtfy(acct *UserAccount, event SSEEvent) {
 		"priority": 4,
 		"tags":     []string{"speech_balloon"},
 	}
+
+	srv.logger.Info("ntfy: sending notification",
+		"phone", acct.Phone,
+		"from", payload["from"],
+		"title", title,
+		"fullText", fullText,
+	)
 	if srv.ntfyConfig.ClickURL != "" {
 		clickURL := srv.ntfyConfig.ClickURL
 		if convId, ok := payload["conversationId"]; ok && convId != "" {
