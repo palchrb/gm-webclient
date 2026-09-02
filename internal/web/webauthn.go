@@ -31,24 +31,46 @@ func (u *webauthnUser) WebAuthnCredentials() []webauthn.Credential {
 	return creds
 }
 
-// pendingWebAuthn stores in-flight registration/login ceremonies.
+// pendingCeremonies stores in-flight registration/login ceremonies, keyed by
+// phone. A ceremony is only valid for ceremonyTTL: browsers time out the
+// WebAuthn prompt after a few minutes anyway, and without an expiry an
+// abandoned begin call would stay completable forever and the map would grow
+// with every crashed tab.
+const ceremonyTTL = 5 * time.Minute
+
+type pendingCeremony struct {
+	data      *webauthn.SessionData
+	createdAt time.Time
+}
+
 var (
-	pendingCeremonies   = map[string]*webauthn.SessionData{} // keyed by phone
+	pendingCeremonies   = map[string]pendingCeremony{}
 	pendingCeremoniesMu sync.Mutex
 )
 
 func storeCeremony(phone string, data *webauthn.SessionData) {
+	now := time.Now()
 	pendingCeremoniesMu.Lock()
-	pendingCeremonies[phone] = data
+	for k, c := range pendingCeremonies {
+		if now.Sub(c.createdAt) > ceremonyTTL {
+			delete(pendingCeremonies, k)
+		}
+	}
+	pendingCeremonies[phone] = pendingCeremony{data: data, createdAt: now}
 	pendingCeremoniesMu.Unlock()
 }
 
+// popCeremony returns and removes the pending ceremony for phone, or nil if
+// there is none or it has expired.
 func popCeremony(phone string) *webauthn.SessionData {
 	pendingCeremoniesMu.Lock()
-	data := pendingCeremonies[phone]
+	c, ok := pendingCeremonies[phone]
 	delete(pendingCeremonies, phone)
 	pendingCeremoniesMu.Unlock()
-	return data
+	if !ok || time.Since(c.createdAt) > ceremonyTTL {
+		return nil
+	}
+	return c.data
 }
 
 // InitWebAuthn creates a WebAuthn instance from the given origin URL.
