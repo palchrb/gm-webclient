@@ -111,6 +111,10 @@ const msgStore = {
 async function init() {
     listenForServiceWorkerMessages();
     msgStore.purgeLegacy();
+    // Installing to the home screen is a strong "I want to keep this app"
+    // signal, and the moment browsers weigh most heavily when deciding
+    // whether our storage may stay.
+    window.addEventListener('appinstalled', () => { requestPersistentStorage(); });
     try {
         const resp = await api('/api/auth/status');
         if (resp.loggedIn) {
@@ -2578,7 +2582,37 @@ async function requestNotificationPermission() {
 
     // Permission granted (either just now or previously) — (re-)register push
     await setupPushNotifications();
+    // Good moment to also claim persistent storage: the user just opted in to
+    // notifications, and in Chrome that grant is itself one of the signals
+    // that makes the request succeed without showing anything.
+    await requestPersistentStorage();
     alert('Push notifications ' + (current === 'default' ? 'enabled' : 're-registered') + '!');
+}
+
+// Ask the browser to exempt our IndexedDB message cache from automatic
+// eviction. Without it the cache is "best-effort" and may be cleared under
+// storage pressure — which would empty the offline view that the service
+// worker's app shell otherwise serves.
+//
+// Deliberately not called on page load: Chrome decides silently from
+// heuristics (installed PWA, notification permission, engagement), but
+// Firefox shows a real permission prompt, and an unexplained prompt on
+// first paint is hostile. It is called from moments where the user has
+// just opted into something instead.
+//
+// Note this does not help against Safari's ITP, which clears script-writable
+// storage after about a week without a visit; adding the app to the home
+// screen is what avoids that.
+async function requestPersistentStorage() {
+    if (!navigator.storage || !navigator.storage.persist) return false;
+    try {
+        if (await navigator.storage.persisted()) return true;
+        const granted = await navigator.storage.persist();
+        console.log('Persistent storage ' + (granted ? 'granted' : 'not granted'));
+        return granted;
+    } catch (e) {
+        return false;
+    }
 }
 
 async function setupPushNotifications() {
