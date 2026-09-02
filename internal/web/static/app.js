@@ -54,6 +54,7 @@ const cache = {
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 async function init() {
+    listenForServiceWorkerMessages();
     try {
         const resp = await api('/api/auth/status');
         if (resp.loggedIn) {
@@ -68,7 +69,7 @@ async function init() {
             setupNtfyButton();
             setupClipboardPaste();
 
-            // Open conversation from URL hash (e.g. #conversation/<id> from ntfy)
+            // Open conversation from URL hash (e.g. #conversation/<id> from a notification)
             var hash = window.location.hash;
             if (hash.startsWith('#conversation/')) {
                 var convId = hash.replace('#conversation/', '');
@@ -82,6 +83,18 @@ async function init() {
     }
     // Show login view only after confirming not logged in
     document.getElementById('login-view').classList.remove('hidden');
+}
+
+// The service worker posts here when a notification is clicked while a tab
+// is already open, so we navigate instead of opening a second window.
+function listenForServiceWorkerMessages() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.addEventListener('message', (e) => {
+        const msg = e.data || {};
+        if (msg.type === 'open-conversation' && msg.conversationId && state.loggedIn) {
+            selectConversation(msg.conversationId);
+        }
+    });
 }
 
 // Paste images from clipboard directly into the composer
@@ -425,6 +438,14 @@ async function logoutThis() {
 async function logoutAll() {
     const clearPasskeys = document.getElementById('clear-passkeys-check').checked;
     hideAccountMenu();
+    // Full logout: drop this browser's push subscription so the push service
+    // stops routing notifications here. (Browser-only logout keeps it — the
+    // server account stays alive and notifications are still wanted.)
+    try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        const sub = await reg?.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+    } catch (e) { /* ignore */ }
     try {
         await api('/api/auth/logout-all', {
             method: 'POST',

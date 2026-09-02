@@ -287,6 +287,8 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req) // optional body
 
 	phone := session.Account.Phone
+	// Drop push subscriptions first so no notification reaches a logged-out browser.
+	s.clearPushSubscriptions(session.Account)
 	s.sessions.RemoveAllForPhone(phone)
 
 	if req.ClearPasskeys && s.passkeyStore != nil {
