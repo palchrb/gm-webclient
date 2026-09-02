@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yourusername/matrix-garmin-messenger/internal/redact"
 	"github.com/yourusername/matrix-garmin-messenger/internal/web"
 )
 
@@ -184,12 +185,7 @@ func maskPhoneAttr(_ []string, a slog.Attr) slog.Attr {
 	return slog.String(a.Key, maskPhone(a.Value.String()))
 }
 
-func maskPhone(p string) string {
-	if len(p) <= 8 {
-		return p // too short to mask without hiding everything
-	}
-	return p[:3] + "…" + p[len(p)-4:]
-}
+func maskPhone(p string) string { return redact.Phone(p) }
 
 func parsePhoneList(s string) []string {
 	var phones []string
