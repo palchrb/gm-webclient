@@ -43,7 +43,10 @@ func main() {
 	default:
 		level = slog.LevelInfo
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: maskPhoneAttr,
+	}))
 	slog.SetDefault(logger)
 
 	// Load or generate VAPID keys for Web Push notifications
@@ -110,8 +113,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "ntfy push enabled (server: %s)\n", ntfyURL)
 	}
 
-	// Push always: send web push even when browser tabs are open (default true)
-	pushAlways := true
+	// Push always: send web push even while a tab is visible. Default false —
+	// the server tracks tab visibility, so a backgrounded tab still gets push.
+	pushAlways := false
 	if envPush := os.Getenv("PUSH_ALWAYS"); envPush != "" {
 		pushAlways = envPush == "true" || envPush == "1"
 	}
@@ -168,6 +172,23 @@ func loadOrGenerateSessionKey(dataDir string) string {
 
 	fmt.Fprintf(os.Stderr, "Generated new session encryption key in %s\n", keyPath)
 	return key
+}
+
+// maskPhoneAttr redacts the middle of any "phone" log attribute so logs can
+// be shared or shipped to an aggregator without revealing full numbers.
+// "+4712345678" becomes "+47…5678". Applies to attrs added via With() too.
+func maskPhoneAttr(_ []string, a slog.Attr) slog.Attr {
+	if a.Key != "phone" || a.Value.Kind() != slog.KindString {
+		return a
+	}
+	return slog.String(a.Key, maskPhone(a.Value.String()))
+}
+
+func maskPhone(p string) string {
+	if len(p) <= 8 {
+		return p // too short to mask without hiding everything
+	}
+	return p[:3] + "…" + p[len(p)-4:]
 }
 
 func parsePhoneList(s string) []string {

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"github.com/google/uuid"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
@@ -159,6 +161,38 @@ func serveMedia(w http.ResponseWriter, data []byte, mediaType gm.MediaType) {
 
 // ─── ffmpeg conversion (matches reference implementation) ────────────────────
 
+// Media conversion goes through files because ffmpeg needs seekable input
+// for iOS audio/mp4 and seekable output for AVIF. Those files hold the
+// user's unencrypted photo/voice note for the duration of the run, so they
+// live in a private 0700 directory, and any directory left behind by a
+// previous crashed process is removed the first time we need one. Mount
+// /tmp as tmpfs in production so they never touch persistent disk.
+var (
+	mediaTempOnce sync.Once
+	mediaTempPath string
+)
+
+const mediaTempPrefix = "garmin-web-media-"
+
+func mediaTempDir() string {
+	mediaTempOnce.Do(func() {
+		base := os.TempDir()
+		if stale, err := filepath.Glob(filepath.Join(base, mediaTempPrefix+"*")); err == nil {
+			for _, d := range stale {
+				os.RemoveAll(d)
+			}
+		}
+		dir, err := os.MkdirTemp(base, mediaTempPrefix)
+		if err != nil {
+			mediaTempPath = "" // os.CreateTemp falls back to the default temp dir
+			return
+		}
+		os.Chmod(dir, 0o700)
+		mediaTempPath = dir
+	})
+	return mediaTempPath
+}
+
 func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, error) {
 	if _, lookupErr := exec.LookPath("ffmpeg"); lookupErr != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", lookupErr)
@@ -166,7 +200,7 @@ func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 
 	// Write input to temp file so ffmpeg can auto-detect the format
 	// (more reliable than guessing demuxer from MIME type)
-	tmpIn, err := os.CreateTemp("", "garmin-img-in-*")
+	tmpIn, err := os.CreateTemp(mediaTempDir(),"garmin-img-in-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp input: %w", err)
 	}
@@ -175,7 +209,7 @@ func toGarminAVIF(ctx context.Context, src []byte, srcMime string) ([]byte, erro
 	tmpIn.Close()
 	defer os.Remove(tmpInPath)
 
-	tmpOut, err := os.CreateTemp("", "garmin-avif-*.avif")
+	tmpOut, err := os.CreateTemp(mediaTempDir(),"garmin-avif-*.avif")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp output: %w", err)
 	}
@@ -214,7 +248,7 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 	// This two-step approach produces cleaner output than a single conversion,
 	// especially for iOS WebKit's audio/mp4 or audio/webm output.
 
-	tmpIn, err := os.CreateTemp("", "garmin-audio-in-*")
+	tmpIn, err := os.CreateTemp(mediaTempDir(),"garmin-audio-in-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp input: %w", err)
 	}
@@ -224,7 +258,7 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 	defer os.Remove(tmpInPath)
 
 	// Step 1: Normalize to standard OGG Opus (like gomuks does for Matrix upload)
-	tmpMid, err := os.CreateTemp("", "garmin-audio-mid-*.ogg")
+	tmpMid, err := os.CreateTemp(mediaTempDir(),"garmin-audio-mid-*.ogg")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp mid: %w", err)
 	}
@@ -249,7 +283,7 @@ func toGarminOGG(ctx context.Context, src []byte, srcMime string) ([]byte, error
 	}
 
 	// Step 2: Re-encode to Garmin format (matching matrix-garmin-messenger exactly)
-	tmpOut, err := os.CreateTemp("", "garmin-audio-out-*.ogg")
+	tmpOut, err := os.CreateTemp(mediaTempDir(),"garmin-audio-out-*.ogg")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp output: %w", err)
 	}

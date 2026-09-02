@@ -84,7 +84,6 @@ services:
       - garmin-web-data:/data
     environment:
       - ORIGIN=https://messenger.example.com
-      - PUSH_ALWAYS=true
       # Optional: ntfy push notifications (see Push Notifications section)
       # - NTFY_URL=https://ntfy.sh
 
@@ -147,7 +146,7 @@ Tapping a ntfy notification opens the web client and navigates to the specific c
 
 ### Push behavior
 
-By default (`PUSH_ALWAYS=true`), push notifications are sent even when browser tabs are open. Set `PUSH_ALWAYS=false` to only send push when no tabs are connected.
+By default (`PUSH_ALWAYS=false`), push notifications are sent whenever no tab is visible — a backgrounded or closed tab gets push, a tab you are looking at gets the message in-app only. Set `PUSH_ALWAYS=true` to also get a system notification while the app is in the foreground.
 
 Logging out a single browser session removes Web Push for that browser only. ntfy and other browser sessions continue receiving notifications. "Log out everywhere" disconnects from Garmin entirely and stops all push.
 
@@ -214,7 +213,7 @@ docker run -p 8080:8080 -v garmin-web-data:/data garmin-web
 | `SESSION_DAYS` | `90` | Days of inactivity before a login expires (renewed on use) |
 | `SESSION_KEY` | (auto) | Key for the encrypted session file. If unset and `-data-dir` is given, a random key is generated and stored in `-data-dir/session_key`. See *Session persistence*. |
 | `ORIGIN` | (empty) | Public HTTPS URL. Enables passkeys (WebAuthn) and sets the click URL for ntfy notifications. |
-| `PUSH_ALWAYS` | `true` | Send push notifications even when browser tabs are open. Set `false` to only push when no tab is visible. |
+| `PUSH_ALWAYS` | `false` | Push only when no tab is *visible* (a backgrounded tab still gets push). Set `true` to also push while you are looking at the app. |
 | `NTFY_URL` | (empty) | ntfy server URL to enable ntfy push forwarding (e.g. `https://ntfy.sh`) |
 | `NTFY_FULL_MESSAGE` | `false` | Include full message body in ntfy notifications. When false, sends "New message" only. |
 

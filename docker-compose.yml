@@ -9,6 +9,10 @@ services:
       - "8080:8080"
     volumes:
       - garmin-web-data:/data
+    # Media conversion (ffmpeg) uses temp files; keep them in RAM so photos
+    # and voice notes never hit persistent disk and vanish on restart.
+    tmpfs:
+      - /tmp:mode=1777,size=256m
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       # Restrict login to specific phone numbers (comma-separated, with country code).
@@ -25,9 +29,10 @@ services:
       # Set to your public HTTPS URL to enable passkeys.
       # Example: ORIGIN=https://messenger.example.com
       - ORIGIN=${ORIGIN:-}
-      # Push notification behavior: "true" sends push even when browser tabs are open.
-      # Set to "false" to only push when no browser tabs are connected.
-      - PUSH_ALWAYS=${PUSH_ALWAYS:-true}
+      # Push notification behavior. Default "false": push only when no tab is
+      # visible (a backgrounded tab still gets push). Set "true" to also push
+      # while you are looking at the app.
+      - PUSH_ALWAYS=${PUSH_ALWAYS:-false}
       # ntfy.sh push notifications (optional). Set to your ntfy server URL to enable.
       # Notifications are sent alongside Web Push when messages arrive.
       # Example: NTFY_URL=https://ntfy.sh
