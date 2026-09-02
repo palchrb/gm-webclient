@@ -98,16 +98,26 @@ func (s *PushSubscriptionStore) Save(phone string, subs map[string]*webpush.Subs
 	return os.WriteFile(p, data, 0o600)
 }
 
-// sendWebPush sends a push notification to all of a session's push subscribers.
-func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
-	srv.logger.Info("sendWebPush called",
-		"phone", acct.Phone,
-		"eventType", event.Type,
-		"dataType", fmt.Sprintf("%T", event.Data),
-	)
+// Delete removes the persisted subscriptions for a phone number.
+func (s *PushSubscriptionStore) Delete(phone string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	os.RemoveAll(filepath.Dir(s.path(phone)))
+}
 
+// pushTTL is how long the push service should hold a notification for an
+// offline device. Messages must not be lost just because the phone was
+// asleep for a few minutes.
+const pushTTL = 24 * 60 * 60 // seconds
+
+// sendWebPush sends a push notification to all of a session's push subscribers.
+//
+// Privacy: the payload is content-free — it carries only the conversation ID.
+// The service worker fetches the message preview from this server over the
+// session cookie, so message text never transits Google/Apple/Mozilla push
+// services, and nothing about the message is logged here.
+func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 	if event.Type != "message" {
-		srv.logger.Debug("sendWebPush: skipping non-message event", "type", event.Type)
 		return
 	}
 	if srv.vapidKeys == nil {
@@ -115,25 +125,22 @@ func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 		return
 	}
 
-	// Extract notification content from the message (skip own messages)
 	payload := buildPushPayload(event.Data, acct.Phone)
 	if payload == nil {
-		srv.logger.Info("sendWebPush: payload nil (own message or unknown type)",
-			"phone", acct.Phone,
-		)
-		return
+		return // own message or unknown type
 	}
-	// Prefix the sender with "Garmin: " so the browser notification is
-	// unambiguously recognisable alongside other notifications.
-	if from := payload["from"]; from != "" {
-		payload["title"] = "Garmin: " + from
+	// Only the identifiers go over the wire. Sender and body stay on the
+	// server; the service worker fetches them over the session cookie and
+	// renders "Garmin: <sender>" locally. (ntfy has its own opt-in path.)
+	wire := map[string]string{
+		"conversationId": payload["conversationId"],
+		"messageId":      payload["messageId"],
 	}
-	srv.logger.Info("sendWebPush: sending notification",
+	srv.logger.Debug("sendWebPush: sending notification",
 		"phone", acct.Phone,
-		"title", payload["title"],
-		"body", payload["body"],
+		"conversationId", wire["conversationId"],
 	)
-	payloadJSON, err := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(wire)
 	if err != nil {
 		return
 	}
@@ -158,7 +165,7 @@ func (srv *Server) sendWebPush(acct *UserAccount, event SSEEvent) {
 			Subscriber:      "mailto:garmin-web@localhost",
 			VAPIDPublicKey:  srv.vapidKeys.PublicKey,
 			VAPIDPrivateKey: srv.vapidKeys.PrivateKey,
-			TTL:             86400,
+			TTL:             pushTTL,
 			Urgency:         webpush.UrgencyHigh,
 		})
 		if err != nil {
@@ -196,13 +203,16 @@ func buildPushPayload(data any, phone string) map[string]string {
 				return nil
 			}
 		}
+		// Internal payload. Web push sends only the IDs (see sendWebPush);
+		// ntfy may include from/body when the user has opted in.
 		p := map[string]string{
 			"title":          "Garmin Messenger",
 			"conversationId": msg.ConversationID.String(),
+			"messageId":      msg.MessageID.String(),
 		}
-		// Include raw sender so downstream (ntfy, web push) can render a
-		// sender-aware title. MessengerApp senders give us an E.164 phone
-		// like "+4740847119"; inReach devices give a Hermes UUID.
+		// Raw sender so ntfy can render a sender-aware title. MessengerApp
+		// senders give us an E.164 phone like "+4740847119"; inReach devices
+		// give a Hermes UUID.
 		if msg.From != nil && *msg.From != "" {
 			p["from"] = *msg.From
 		}
@@ -258,6 +268,18 @@ func (srv *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	srv.logger.Info("Push subscription added", "phone", acct.Phone, "endpoint", sub.Endpoint[:min(50, len(sub.Endpoint))]+"...")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "subscribed"})
+}
+
+// clearPushSubscriptions removes all push subscriptions for an account, both
+// in memory and on disk. Used by full logout so a logged-out browser never
+// receives further notifications.
+func (srv *Server) clearPushSubscriptions(acct *UserAccount) {
+	acct.pushMu.Lock()
+	acct.PushSubscriptions = make(map[string]*webpush.Subscription)
+	acct.pushMu.Unlock()
+	if srv.pushStore != nil {
+		srv.pushStore.Delete(acct.Phone)
+	}
 }
 
 // handlePushUnsubscribe removes a browser push subscription.

@@ -39,6 +39,31 @@ type authStatusResponse struct {
 	UserID   *string `json:"userId,omitempty"`
 }
 
+// authPrecheck validates the phone, enforces the whitelist and applies the
+// abuse limits shared by the unauthenticated auth endpoints. It writes the
+// error response itself and returns false when the request must stop.
+func (s *Server) authPrecheck(w http.ResponseWriter, r *http.Request, phone string) bool {
+	if phone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+		return false
+	}
+	if !validPhone(phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number (use +country format)"})
+		return false
+	}
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[phone] {
+		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", phone)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return false
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) || !s.otpPhoneLimiter.allow(phone) {
+		s.logger.Warn("Auth rate limit hit", "phone", phone, "ip", clientIP(r))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	var req requestOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -46,15 +71,7 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	// Check phone whitelist
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", req.Phone)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -105,13 +122,7 @@ func (s *Server) handleRequestReauthOTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -167,8 +178,16 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Phone == "" || req.Code == "" {
+	if req.Code == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone and code are required"})
+		return
+	}
+	if !validPhone(req.Phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number"})
+		return
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
 		return
 	}
 
@@ -206,7 +225,7 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.wirePushCallback(session.Account)
 
-	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+	SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 	s.PersistSessions()
 
 	userID := gm.PhoneToHermesUserID(req.Phone)
@@ -253,6 +272,8 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Touch()
+	// Renew the cookie on every page load so its lifetime slides with use.
+	SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 	phone := session.Phone()
 	userID := gm.PhoneToHermesUserID(phone)
 	writeJSON(w, http.StatusOK, authStatusResponse{
@@ -268,7 +289,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessions.RemoveSession(session.ID)
 		s.PersistSessions()
 	}
-	ClearSessionCookie(w)
+	ClearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -287,6 +308,8 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req) // optional body
 
 	phone := session.Account.Phone
+	// Drop push subscriptions first so no notification reaches a logged-out browser.
+	s.clearPushSubscriptions(session.Account)
 	s.sessions.RemoveAllForPhone(phone)
 
 	if req.ClearPasskeys && s.passkeyStore != nil {
@@ -295,7 +318,7 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.PersistSessions()
-	ClearSessionCookie(w)
+	ClearSessionCookie(w, r)
 	s.logger.Info("Full logout: all sessions + Garmin deregistered", "phone", phone, "passkeysCleared", req.ClearPasskeys)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }

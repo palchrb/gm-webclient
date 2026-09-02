@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yourusername/matrix-garmin-messenger/internal/redact"
 	"github.com/yourusername/matrix-garmin-messenger/internal/web"
 )
 
@@ -20,7 +21,7 @@ func main() {
 	dataDir := flag.String("data-dir", "", "Directory for persistent data (FCM credentials, VAPID keys, push subscriptions, sessions)")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	phoneWhitelist := flag.String("phone-whitelist", "", "Comma-separated list of phone numbers allowed to log in (e.g. \"+4712345678,+4787654321\"). Empty allows all.")
-	sessionDays := flag.Int("session-days", 7, "Number of days a login session/cookie is valid")
+	sessionDays := flag.Int("session-days", 90, "Days of inactivity before a login session/cookie expires (renewed on use)")
 	origin := flag.String("origin", "", "Origin URL for passkey/WebAuthn support (e.g. \"https://garmin.tailnet.ts.net\")")
 	flag.Parse()
 
@@ -43,7 +44,10 @@ func main() {
 	default:
 		level = slog.LevelInfo
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: maskPhoneAttr,
+	}))
 	slog.SetDefault(logger)
 
 	// Load or generate VAPID keys for Web Push notifications
@@ -110,8 +114,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "ntfy push enabled (server: %s)\n", ntfyURL)
 	}
 
-	// Push always: send web push even when browser tabs are open (default true)
-	pushAlways := true
+	// Push always: send web push even while a tab is visible. Default false —
+	// the server tracks tab visibility, so a backgrounded tab still gets push.
+	pushAlways := false
 	if envPush := os.Getenv("PUSH_ALWAYS"); envPush != "" {
 		pushAlways = envPush == "true" || envPush == "1"
 	}
@@ -169,6 +174,18 @@ func loadOrGenerateSessionKey(dataDir string) string {
 	fmt.Fprintf(os.Stderr, "Generated new session encryption key in %s\n", keyPath)
 	return key
 }
+
+// maskPhoneAttr redacts the middle of any "phone" log attribute so logs can
+// be shared or shipped to an aggregator without revealing full numbers.
+// "+4712345678" becomes "+47…5678". Applies to attrs added via With() too.
+func maskPhoneAttr(_ []string, a slog.Attr) slog.Attr {
+	if a.Key != "phone" || a.Value.Kind() != slog.KindString {
+		return a
+	}
+	return slog.String(a.Key, maskPhone(a.Value.String()))
+}
+
+func maskPhone(p string) string { return redact.Phone(p) }
 
 func parsePhoneList(s string) []string {
 	var phones []string

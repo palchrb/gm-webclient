@@ -31,24 +31,46 @@ func (u *webauthnUser) WebAuthnCredentials() []webauthn.Credential {
 	return creds
 }
 
-// pendingWebAuthn stores in-flight registration/login ceremonies.
+// pendingCeremonies stores in-flight registration/login ceremonies, keyed by
+// phone. A ceremony is only valid for ceremonyTTL: browsers time out the
+// WebAuthn prompt after a few minutes anyway, and without an expiry an
+// abandoned begin call would stay completable forever and the map would grow
+// with every crashed tab.
+const ceremonyTTL = 5 * time.Minute
+
+type pendingCeremony struct {
+	data      *webauthn.SessionData
+	createdAt time.Time
+}
+
 var (
-	pendingCeremonies   = map[string]*webauthn.SessionData{} // keyed by phone
+	pendingCeremonies   = map[string]pendingCeremony{}
 	pendingCeremoniesMu sync.Mutex
 )
 
 func storeCeremony(phone string, data *webauthn.SessionData) {
+	now := time.Now()
 	pendingCeremoniesMu.Lock()
-	pendingCeremonies[phone] = data
+	for k, c := range pendingCeremonies {
+		if now.Sub(c.createdAt) > ceremonyTTL {
+			delete(pendingCeremonies, k)
+		}
+	}
+	pendingCeremonies[phone] = pendingCeremony{data: data, createdAt: now}
 	pendingCeremoniesMu.Unlock()
 }
 
+// popCeremony returns and removes the pending ceremony for phone, or nil if
+// there is none or it has expired.
 func popCeremony(phone string) *webauthn.SessionData {
 	pendingCeremoniesMu.Lock()
-	data := pendingCeremonies[phone]
+	c, ok := pendingCeremonies[phone]
 	delete(pendingCeremonies, phone)
 	pendingCeremoniesMu.Unlock()
-	return data
+	if !ok || time.Since(c.createdAt) > ceremonyTTL {
+		return nil
+	}
+	return c.data
 }
 
 // InitWebAuthn creates a WebAuthn instance from the given origin URL.
@@ -157,13 +179,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -193,13 +209,16 @@ type passkeyLoginResponse struct {
 
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	phone := r.URL.Query().Get("phone")
-	if phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+	if !validPhone(phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number"})
 		return
 	}
-
 	if s.phoneWhitelist != nil && !s.phoneWhitelist[phone] {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
 		return
 	}
 
@@ -248,7 +267,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}
 			s.wirePushCallback(session.Account)
 
-			SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+			SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 			s.PersistSessions()
 
 			s.logger.Info("Passkey login successful", "phone", phone)
@@ -278,7 +297,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}
 			s.wirePushCallback(session.Account)
 
-			SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+			SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 			s.PersistSessions()
 
 			s.logger.Info("Passkey login successful (token refreshed)", "phone", phone)
@@ -312,7 +331,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 					session.Account.pushMu.Unlock()
 				}
 				s.wirePushCallback(session.Account)
-				SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+				SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 				s.PersistSessions()
 
 				s.logger.Info("Passkey login successful (late refresh)", "phone", phone)

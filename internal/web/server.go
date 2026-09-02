@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -27,6 +28,10 @@ type Server struct {
 	logger         *slog.Logger
 	mux            *http.ServeMux
 	phoneWhitelist map[string]bool // nil = allow all, non-nil = only listed phones
+
+	// Abuse limits for the unauthenticated auth endpoints.
+	otpPhoneLimiter *rateLimiter // SMS codes per phone number
+	authIPLimiter   *rateLimiter // auth attempts per client IP
 }
 
 // ServerOption configures the Server.
@@ -118,6 +123,9 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		pushAlways:   true,
 		logger:       logger,
 		mux:          http.NewServeMux(),
+
+		otpPhoneLimiter: newRateLimiter(5, 15*time.Minute),
+		authIPLimiter:   newRateLimiter(30, 15*time.Minute),
 	}
 	if ntfyStore != nil {
 		s.sessions.SetNtfyStore(ntfyStore)
@@ -126,13 +134,18 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		opt(s)
 	}
 
-	// Restore encrypted sessions from disk if SESSION_KEY is configured
+	// Re-persist whenever Garmin rotates a token pair so a restart never
+	// restores stale credentials.
+	s.sessions.onCredentialsUpdated = s.PersistSessions
+
+	// Restore encrypted accounts/sessions from disk if persistence is enabled
 	if s.sessionStore != nil {
 		n := s.sessions.RestoreSessions(s.sessionStore, logger)
 		if n > 0 {
-			logger.Info("Restored encrypted sessions", "count", n)
+			logger.Info("Restored encrypted accounts", "count", n)
 			s.wireRestoredAccounts()
 		}
+		s.PersistSessions() // write back in current format, minus anything that failed validation
 	}
 
 	s.registerRoutes()
@@ -223,7 +236,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	// Push notification endpoints
-	s.mux.HandleFunc("GET /api/push/vapid-key", s.handleGetVAPIDKey)
+	s.mux.HandleFunc("GET /api/push/vapid-key", s.requireSession(s.handleGetVAPIDKey))
 	s.mux.HandleFunc("POST /api/push/subscribe", s.requireSession(s.handlePushSubscribe))
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.requireSession(s.handlePushUnsubscribe))
 
@@ -255,6 +268,15 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // ListenAndServe starts the HTTP server.
+// No ReadTimeout/WriteTimeout: SSE streams are long-lived and media uploads
+// can be slow on mobile links. Header and idle timeouts still bound
+// slowloris-style connections.
 func (s *Server) ListenAndServe(addr string) error {
-	return http.ListenAndServe(addr, s.mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	return srv.ListenAndServe()
 }

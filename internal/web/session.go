@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -144,6 +145,10 @@ type SessionManager struct {
 	ntfyStore      *NtfyStore // optional, for restoring per-phone ntfy preference
 	mu             sync.RWMutex
 	logger         *slog.Logger
+
+	// onCredentialsUpdated is attached to every account's HermesAuth so a
+	// token refresh re-persists sessions (see Server.PersistSessions).
+	onCredentialsUpdated func()
 }
 
 // SetNtfyStore wires a NtfyStore so account creation restores the user's
@@ -211,6 +216,7 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 		}
 
 		hermesLogger := logger.With("component", "hermes", "phone", phone)
+		auth.OnCredentialsUpdated = sm.onCredentialsUpdated
 		acct.mu.Lock()
 		acct.Auth = auth
 		acct.API = gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
@@ -231,6 +237,7 @@ func (sm *SessionManager) getOrCreateAccount(phone string, auth *gm.HermesAuth, 
 	}
 
 	hermesLogger := logger.With("component", "hermes", "phone", phone)
+	auth.OnCredentialsUpdated = sm.onCredentialsUpdated
 	api := gm.NewHermesAPI(auth, gm.WithAPILogger(hermesLogger))
 	sr := gm.NewHermesSignalR(auth, gm.WithSignalRLogger(hermesLogger))
 
@@ -339,6 +346,31 @@ func (sm *SessionManager) CreateSession(phone string, auth *gm.HermesAuth, logge
 
 	sm.logger.Info("Session created", "phone", phone, "sessionId", sessionID[:8]+"...")
 	return session, nil
+}
+
+// RestoreAccount registers an account from persisted credentials without a
+// browser session. Used at startup so FCM push keeps working for accounts
+// whose browsers are logged out.
+func (sm *SessionManager) RestoreAccount(phone string, auth *gm.HermesAuth, logger *slog.Logger) *UserAccount {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.getOrCreateAccount(phone, auth, logger)
+}
+
+// RestoreSession attaches a persisted browser session (existing cookie ID
+// and last-activity time) to an already-restored account.
+func (sm *SessionManager) RestoreSession(sessionID, phone string, lastActivity time.Time) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	acct, ok := sm.accounts[phone]
+	if !ok {
+		return false
+	}
+	if lastActivity.IsZero() {
+		lastActivity = time.Now()
+	}
+	sm.sessions[sessionID] = &UserSession{ID: sessionID, Account: acct, LastActivity: lastActivity}
+	return true
 }
 
 // EnsureSignalR starts SignalR for the account if not already started.
@@ -578,8 +610,16 @@ func (sm *SessionManager) PopPasskeyVerified(phone string) bool {
 	return time.Since(t) < 10*time.Minute
 }
 
-// SetSessionCookie sets the session cookie on the response.
-func SetSessionCookie(w http.ResponseWriter, sessionID string, maxAgeDays int) {
+// requestIsHTTPS reports whether the client reached us over TLS, directly or
+// via a reverse proxy that sets X-Forwarded-Proto.
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// SetSessionCookie sets (or renews) the session cookie on the response.
+// Called on login and on every auth-status check so the cookie lifetime
+// slides with activity instead of expiring a fixed N days after login.
+func SetSessionCookie(w http.ResponseWriter, r *http.Request, sessionID string, maxAgeDays int) {
 	if maxAgeDays <= 0 {
 		maxAgeDays = defaultSessionDays
 	}
@@ -588,19 +628,23 @@ func SetSessionCookie(w http.ResponseWriter, sessionID string, maxAgeDays int) {
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		// Secure only when actually on TLS so plain-http localhost still works;
+		// Lax (not Strict) so ntfy/notification click-throughs carry the cookie.
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * maxAgeDays,
 	})
 }
 
 // ClearSessionCookie clears the session cookie.
-func ClearSessionCookie(w http.ResponseWriter) {
+func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }

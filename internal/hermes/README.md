@@ -48,21 +48,25 @@ import (
 func main() {
     ctx := context.Background()
 
-    auth := gm.NewHermesAuth(
-        gm.WithSessionDir("~/.garmin-messenger"),
-    )
+    auth := gm.NewHermesAuth()
+
+    // Persisting credentials is the caller's job — the library never writes
+    // tokens to disk. This hook fires after ConfirmOTP and after every
+    // automatic token refresh, so what you store is always current.
+    auth.OnCredentialsUpdated = func() {
+        saveEncrypted(auth.AccessToken, auth.RefreshToken, auth.InstanceID, auth.ExpiresAt)
+    }
 
     // First time: two-step SMS OTP registration
     otpReq, err := auth.RequestOTP(ctx, "+1234567890", "My App")
     // ... collect OTP code from the user ...
     err = auth.ConfirmOTP(ctx, otpReq, "123456")
 
-    // Subsequent runs: resume saved session
-    err = auth.Resume(ctx)
+    // Subsequent runs: restore the four fields you saved, then use auth as
+    // normal. Expired access tokens are refreshed automatically on first use.
+    auth.AccessToken, auth.RefreshToken, auth.InstanceID, auth.ExpiresAt = loadEncrypted()
 }
 ```
-
-Credentials are saved to `~/.garmin-messenger/hermes_credentials.json` and automatically refreshed when expired.
 
 ### Sending Messages
 
