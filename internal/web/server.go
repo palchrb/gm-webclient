@@ -236,7 +236,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	// Push notification endpoints
-	s.mux.HandleFunc("GET /api/push/vapid-key", s.handleGetVAPIDKey)
+	s.mux.HandleFunc("GET /api/push/vapid-key", s.requireSession(s.handleGetVAPIDKey))
 	s.mux.HandleFunc("POST /api/push/subscribe", s.requireSession(s.handlePushSubscribe))
 	s.mux.HandleFunc("DELETE /api/push/subscribe", s.requireSession(s.handlePushUnsubscribe))
 
