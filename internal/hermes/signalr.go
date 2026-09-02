@@ -150,10 +150,10 @@ func (sr *HermesSignalR) connect(ctx context.Context, hubURL string) (signalr.Co
 
 	body, _ := io.ReadAll(resp.Body)
 	sr.logger.Debug("SignalR connector: negotiate response",
-		"status", resp.StatusCode, "body", truncate(string(body), 2000))
+		"status", resp.StatusCode, "body", truncate(redactSecrets(string(body)), 2000))
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("negotiate failed: %s %s", resp.Status, truncate(string(body), 500))
+		return nil, fmt.Errorf("negotiate failed: %s %s", resp.Status, truncate(redactSecrets(string(body)), 500))
 	}
 
 	var negResp struct {

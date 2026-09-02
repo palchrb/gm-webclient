@@ -658,14 +658,14 @@ func (api *HermesAPI) doMutate(ctx context.Context, method, path string, reqBody
 func (api *HermesAPI) logRequest(method, url string, headers http.Header, body []byte) {
 	api.logger.Debug(">>> "+method, "url", url)
 	if body != nil {
-		api.logger.Debug("  Request body", "json", truncate(string(body), 500))
+		api.logger.Debug("  Request body", "json", truncate(redactSecrets(string(body)), 500))
 	}
 }
 
 func (api *HermesAPI) logResponse(resp *http.Response, body []byte) {
 	api.logger.Debug("<<< Response", "status", resp.StatusCode, "url", resp.Request.URL.String(), "bytes", len(body))
 	if len(body) > 0 {
-		api.logger.Debug("  Response body", "json", truncate(string(body), 500))
+		api.logger.Debug("  Response body", "json", truncate(redactSecrets(string(body)), 500))
 	}
 }
 

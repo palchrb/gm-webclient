@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,17 +15,12 @@ import (
 func TestNewHermesAuth_Defaults(t *testing.T) {
 	a := NewHermesAuth()
 	assert.Equal(t, DefaultHermesBase, a.HermesBase)
-	assert.Empty(t, a.SessionDir)
 	assert.Empty(t, a.AccessToken)
 }
 
 func TestNewHermesAuth_Options(t *testing.T) {
-	a := NewHermesAuth(
-		WithHermesBase("https://example.com/"),
-		WithSessionDir("/tmp/test"),
-	)
+	a := NewHermesAuth(WithHermesBase("https://example.com/"))
 	assert.Equal(t, "https://example.com", a.HermesBase) // trailing slash stripped
-	assert.Equal(t, "/tmp/test", a.SessionDir)
 }
 
 func TestWithPnsHandle_Default(t *testing.T) {
@@ -129,7 +122,6 @@ func TestRequestOTP_409Retry(t *testing.T) {
 }
 
 func TestConfirmOTP_HappyPath(t *testing.T) {
-	sessionDir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/Registration/App/Confirm", r.URL.Path)
 		assert.Equal(t, "POST", r.Method)
@@ -158,7 +150,9 @@ func TestConfirmOTP_HappyPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewHermesAuth(WithHermesBase(server.URL), WithSessionDir(sessionDir))
+	a := NewHermesAuth(WithHermesBase(server.URL))
+	updated := make(chan struct{}, 1)
+	a.OnCredentialsUpdated = func() { updated <- struct{}{} }
 	otpReq := &OtpRequest{
 		RequestID:   "req-123",
 		PhoneNumber: "+15551234567",
@@ -173,18 +167,15 @@ func TestConfirmOTP_HappyPath(t *testing.T) {
 	assert.Equal(t, testInstanceID, a.InstanceID)
 	assert.False(t, a.TokenExpired())
 
-	// Verify credential persistence to disk
-	data, err := os.ReadFile(filepath.Join(sessionDir, "hermes_credentials.json"))
-	require.NoError(t, err)
-	var creds map[string]interface{}
-	require.NoError(t, json.Unmarshal(data, &creds))
-	assert.Equal(t, "new-access-token", creds["access_token"])
-	assert.Equal(t, "new-refresh-token", creds["refresh_token"])
-	assert.Equal(t, testInstanceID, creds["instance_id"])
+	// The owner is notified so it can persist the new tokens itself.
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("OnCredentialsUpdated was not called")
+	}
 }
 
 func TestConfirmOTP_CustomPnsHandle(t *testing.T) {
-	sessionDir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/Registration/App/Confirm", r.URL.Path)
 		assert.Equal(t, "POST", r.Method)
@@ -215,7 +206,6 @@ func TestConfirmOTP_CustomPnsHandle(t *testing.T) {
 
 	a := NewHermesAuth(
 		WithHermesBase(server.URL),
-		WithSessionDir(sessionDir),
 		WithPnsHandle("custom-fcm-token"),
 	)
 	otpReq := &OtpRequest{
@@ -269,67 +259,6 @@ func TestUpdatePnsHandle_ServerError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestResume_HappyPath(t *testing.T) {
-	sessionDir := t.TempDir()
-	creds := map[string]interface{}{
-		"access_token":  "saved-token",
-		"refresh_token": "saved-refresh",
-		"instance_id":   testInstanceID,
-		"expires_at":    float64(time.Now().Unix()) + 3600,
-	}
-	data, _ := json.Marshal(creds)
-	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "hermes_credentials.json"), data, 0o600))
-
-	a := NewHermesAuth(WithSessionDir(sessionDir))
-	err := a.Resume(context.Background())
-	require.NoError(t, err)
-
-	assert.Equal(t, "saved-token", a.AccessToken)
-	assert.Equal(t, "saved-refresh", a.RefreshToken)
-	assert.Equal(t, testInstanceID, a.InstanceID)
-	assert.False(t, a.TokenExpired())
-}
-
-func TestResume_ExpiredTriggersRefresh(t *testing.T) {
-	sessionDir := t.TempDir()
-	creds := map[string]interface{}{
-		"access_token":  "expired-token",
-		"refresh_token": "valid-refresh",
-		"instance_id":   testInstanceID,
-		"expires_at":    float64(time.Now().Unix()) - 100,
-	}
-	data, _ := json.Marshal(creds)
-	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "hermes_credentials.json"), data, 0o600))
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/Registration/App/Refresh", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(AppRegistrationResponse{
-			InstanceID: testInstanceID,
-			AccessAndRefreshToken: AccessAndRefreshToken{
-				AccessToken:  "refreshed-token",
-				RefreshToken: "new-refresh",
-				ExpiresIn:    3600,
-			},
-		})
-	}))
-	defer server.Close()
-
-	a := NewHermesAuth(WithHermesBase(server.URL), WithSessionDir(sessionDir))
-	err := a.Resume(context.Background())
-	require.NoError(t, err)
-
-	assert.Equal(t, "refreshed-token", a.AccessToken)
-	assert.False(t, a.TokenExpired())
-}
-
-func TestResume_MissingFile(t *testing.T) {
-	a := NewHermesAuth(WithSessionDir(t.TempDir()))
-	err := a.Resume(context.Background())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no saved credentials")
-}
-
 func TestHeaders_BearerFormat(t *testing.T) {
 	a := NewHermesAuth()
 	a.AccessToken = "test-token"
@@ -367,7 +296,6 @@ func TestHeaders_TriggersRefresh(t *testing.T) {
 }
 
 func TestRefreshHermesToken_HappyPath(t *testing.T) {
-	sessionDir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/Registration/App/Refresh", r.URL.Path)
 		assert.Equal(t, "1.0", r.Header.Get("Api-Version"))
@@ -389,9 +317,11 @@ func TestRefreshHermesToken_HappyPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewHermesAuth(WithHermesBase(server.URL), WithSessionDir(sessionDir))
+	a := NewHermesAuth(WithHermesBase(server.URL))
 	a.RefreshToken = "old-refresh"
 	a.InstanceID = testInstanceID
+	updated := make(chan struct{}, 1)
+	a.OnCredentialsUpdated = func() { updated <- struct{}{} }
 
 	err := a.RefreshHermesToken(context.Background())
 	require.NoError(t, err)
@@ -400,12 +330,13 @@ func TestRefreshHermesToken_HappyPath(t *testing.T) {
 	assert.Equal(t, "new-refresh", a.RefreshToken)
 	assert.False(t, a.TokenExpired())
 
-	// Verify persistence
-	data, err := os.ReadFile(filepath.Join(sessionDir, "hermes_credentials.json"))
-	require.NoError(t, err)
-	var creds map[string]interface{}
-	require.NoError(t, json.Unmarshal(data, &creds))
-	assert.Equal(t, "new-token", creds["access_token"])
+	// A refresh must notify the owner, otherwise a restart would restore
+	// the old (now invalid) refresh token.
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("OnCredentialsUpdated was not called after refresh")
+	}
 }
 
 func TestRefreshHermesToken_NoCredentials(t *testing.T) {

@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -58,13 +56,6 @@ func WithHermesBase(base string) HermesAuthOption {
 	}
 }
 
-// WithSessionDir sets the directory for credential storage.
-func WithSessionDir(dir string) HermesAuthOption {
-	return func(a *HermesAuth) {
-		a.SessionDir = dir
-	}
-}
-
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(client *http.Client) HermesAuthOption {
 	return func(a *HermesAuth) {
@@ -87,9 +78,12 @@ func WithPnsHandle(handle string) HermesAuthOption {
 }
 
 // HermesAuth manages the full authentication lifecycle for Hermes messaging API.
+//
+// Credentials live in memory only. Persisting them is the caller's job (the
+// web server keeps them AES-GCM encrypted via its session store) so that no
+// code path in this package can ever write tokens to disk in plaintext.
 type HermesAuth struct {
 	HermesBase   string
-	SessionDir   string
 	AccessToken  string
 	RefreshToken string
 	InstanceID   string
@@ -343,46 +337,6 @@ func (a *HermesAuth) UpdatePnsHandle(ctx context.Context, pnsHandle string) erro
 	return nil
 }
 
-// Resume restores credentials from disk. If the token is expired, it refreshes.
-func (a *HermesAuth) Resume(ctx context.Context) error {
-	credsPath := a.credsPath()
-	if credsPath == "" {
-		return fmt.Errorf("no session directory configured")
-	}
-
-	data, err := os.ReadFile(credsPath)
-	if err != nil {
-		return fmt.Errorf("no saved credentials found at %s: call RequestOTP() + ConfirmOTP() first", credsPath)
-	}
-
-	var creds struct {
-		AccessToken  string  `json:"access_token"`
-		RefreshToken string  `json:"refresh_token"`
-		InstanceID   string  `json:"instance_id"`
-		ExpiresAt    float64 `json:"expires_at"`
-	}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return fmt.Errorf("parsing credentials: %w", err)
-	}
-
-	a.AccessToken = creds.AccessToken
-	a.RefreshToken = creds.RefreshToken
-	a.InstanceID = creds.InstanceID
-	a.ExpiresAt = creds.ExpiresAt
-
-	a.logger.Debug("Resumed credentials",
-		"instanceId", a.InstanceID,
-		"expiresAt", time.Unix(int64(a.ExpiresAt), 0).UTC().Format(time.RFC3339),
-		"expiresIn", fmt.Sprintf("%.0fs", a.ExpiresAt-float64(time.Now().Unix())),
-	)
-
-	if a.TokenExpired() {
-		return a.RefreshHermesToken(ctx)
-	}
-
-	return nil
-}
-
 // Headers returns auth headers for Hermes REST API requests.
 // It automatically refreshes expired tokens.
 func (a *HermesAuth) Headers(ctx context.Context) (http.Header, error) {
@@ -468,7 +422,8 @@ func (a *HermesAuth) AccessTokenFactory(ctx context.Context) (string, error) {
 	return a.AccessToken, nil
 }
 
-// storeCredentials saves the access/refresh tokens to memory and disk.
+// storeCredentials updates the in-memory tokens and notifies the owner so
+// it can persist them however it sees fit.
 func (a *HermesAuth) storeCredentials(instanceID string, tokens *AccessAndRefreshToken) {
 	a.AccessToken = tokens.AccessToken
 	a.RefreshToken = tokens.RefreshToken
@@ -478,36 +433,6 @@ func (a *HermesAuth) storeCredentials(instanceID string, tokens *AccessAndRefres
 	if cb := a.OnCredentialsUpdated; cb != nil {
 		go cb()
 	}
-
-	credsPath := a.credsPath()
-	if credsPath == "" {
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(credsPath), 0o755); err != nil {
-		a.logger.Error("Failed to create session directory", "error", err)
-		return
-	}
-
-	data, _ := json.MarshalIndent(map[string]interface{}{
-		"access_token":  a.AccessToken,
-		"refresh_token": a.RefreshToken,
-		"instance_id":   a.InstanceID,
-		"expires_at":    a.ExpiresAt,
-	}, "", "  ")
-
-	if err := os.WriteFile(credsPath, data, 0o600); err != nil {
-		a.logger.Error("Failed to save credentials", "error", err)
-	} else {
-		a.logger.Debug("Saved credentials", "path", credsPath)
-	}
-}
-
-func (a *HermesAuth) credsPath() string {
-	if a.SessionDir == "" {
-		return ""
-	}
-	return filepath.Join(a.SessionDir, "hermes_credentials.json")
 }
 
 func (a *HermesAuth) doRequest(ctx context.Context, method, url string, headers http.Header, body []byte) (*http.Response, error) {
@@ -535,7 +460,7 @@ func (a *HermesAuth) doRequest(ctx context.Context, method, url string, headers 
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	a.logResponse(resp)
-	a.logger.Debug("  Response body", "length", len(respBody), "json", truncate(string(respBody), 500))
+	a.logger.Debug("  Response body", "length", len(respBody), "json", truncate(redactSecrets(string(respBody)), 500))
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	return resp, nil
@@ -544,7 +469,7 @@ func (a *HermesAuth) doRequest(ctx context.Context, method, url string, headers 
 func (a *HermesAuth) logRequest(method, url string, headers http.Header, body []byte) {
 	a.logger.Debug(">>> "+method, "url", url)
 	if body != nil {
-		a.logger.Debug("  Request body", "json", truncate(string(body), 500))
+		a.logger.Debug("  Request body", "json", truncate(redactSecrets(string(body)), 500))
 	}
 }
 

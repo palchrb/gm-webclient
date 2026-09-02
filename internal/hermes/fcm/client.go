@@ -559,7 +559,7 @@ func (t *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	// Log request
 	t.logger.Debug(">>> "+req.Method, "url", req.URL.String())
 	for k, v := range req.Header {
-		val := strings.Join(v, ", ")
+		val := redactSecrets(strings.Join(v, ", "))
 		if len(val) > 120 {
 			t.logger.Debug("  Request header", "key", k, "value", val[:60]+"..."+val[len(val)-20:])
 		} else {
@@ -570,7 +570,7 @@ func (t *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		bodyBytes, err := io.ReadAll(req.Body)
 		req.Body.Close()
 		if err == nil {
-			t.logger.Debug("  Request body", "length", len(bodyBytes), "data", truncate(string(bodyBytes), 2000))
+			t.logger.Debug("  Request body", "length", len(bodyBytes), "data", truncate(redactSecrets(string(bodyBytes)), 2000))
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 	}
@@ -590,7 +590,7 @@ func (t *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	respBody, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if readErr == nil {
-		t.logger.Debug("  Response body", "length", len(respBody), "data", truncate(string(respBody), 2000))
+		t.logger.Debug("  Response body", "length", len(respBody), "data", truncate(redactSecrets(string(respBody)), 2000))
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 	}
 
