@@ -39,6 +39,31 @@ type authStatusResponse struct {
 	UserID   *string `json:"userId,omitempty"`
 }
 
+// authPrecheck validates the phone, enforces the whitelist and applies the
+// abuse limits shared by the unauthenticated auth endpoints. It writes the
+// error response itself and returns false when the request must stop.
+func (s *Server) authPrecheck(w http.ResponseWriter, r *http.Request, phone string) bool {
+	if phone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+		return false
+	}
+	if !validPhone(phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number (use +country format)"})
+		return false
+	}
+	if s.phoneWhitelist != nil && !s.phoneWhitelist[phone] {
+		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", phone)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return false
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) || !s.otpPhoneLimiter.allow(phone) {
+		s.logger.Warn("Auth rate limit hit", "phone", phone, "ip", clientIP(r))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	var req requestOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -46,15 +71,7 @@ func (s *Server) handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	// Check phone whitelist
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		s.logger.Warn("Login attempt from non-whitelisted phone", "phone", req.Phone)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -105,13 +122,7 @@ func (s *Server) handleRequestReauthOTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -167,8 +178,16 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Phone == "" || req.Code == "" {
+	if req.Code == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone and code are required"})
+		return
+	}
+	if !validPhone(req.Phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number"})
+		return
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
 		return
 	}
 

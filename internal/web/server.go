@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
@@ -27,6 +28,10 @@ type Server struct {
 	logger         *slog.Logger
 	mux            *http.ServeMux
 	phoneWhitelist map[string]bool // nil = allow all, non-nil = only listed phones
+
+	// Abuse limits for the unauthenticated auth endpoints.
+	otpPhoneLimiter *rateLimiter // SMS codes per phone number
+	authIPLimiter   *rateLimiter // auth attempts per client IP
 }
 
 // ServerOption configures the Server.
@@ -118,6 +123,9 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		pushAlways:   true,
 		logger:       logger,
 		mux:          http.NewServeMux(),
+
+		otpPhoneLimiter: newRateLimiter(5, 15*time.Minute),
+		authIPLimiter:   newRateLimiter(30, 15*time.Minute),
 	}
 	if ntfyStore != nil {
 		s.sessions.SetNtfyStore(ntfyStore)
@@ -260,6 +268,15 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // ListenAndServe starts the HTTP server.
+// No ReadTimeout/WriteTimeout: SSE streams are long-lived and media uploads
+// can be slow on mobile links. Header and idle timeouts still bound
+// slowloris-style connections.
 func (s *Server) ListenAndServe(addr string) error {
-	return http.ListenAndServe(addr, s.mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	return srv.ListenAndServe()
 }

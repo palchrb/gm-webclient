@@ -157,13 +157,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if req.Phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
-		return
-	}
-
-	if s.phoneWhitelist != nil && !s.phoneWhitelist[req.Phone] {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+	if !s.authPrecheck(w, r, req.Phone) {
 		return
 	}
 
@@ -193,13 +187,16 @@ type passkeyLoginResponse struct {
 
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	phone := r.URL.Query().Get("phone")
-	if phone == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone is required"})
+	if !validPhone(phone) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phone number"})
 		return
 	}
-
 	if s.phoneWhitelist != nil && !s.phoneWhitelist[phone] {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this phone number is not allowed"})
+		return
+	}
+	if !s.authIPLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, try again later"})
 		return
 	}
 
