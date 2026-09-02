@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/google/uuid"
+	gm "github.com/yourusername/matrix-garmin-messenger/internal/hermes"
 )
 
 const maxUploadSize = 10 << 20 // 10 MB
