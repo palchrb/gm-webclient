@@ -52,9 +52,65 @@ const cache = {
     },
 };
 
+// ─── Message Store (IndexedDB) ───────────────────────────────────────────────
+// Message bodies live in IndexedDB rather than localStorage: it is not bound
+// by the ~5 MB localStorage quota (where a full cache silently stops
+// updating), writes are async, and per-conversation trimming is cheap.
+// Everything is still on-device only; the server never stores messages.
+const msgStore = {
+    DB: 'gm', STORE: 'messages', MAX_PER_CONV: 500,
+    _db: null,
+    open() {
+        if (this._db) return Promise.resolve(this._db);
+        if (!('indexedDB' in window)) return Promise.resolve(null);
+        return new Promise((resolve) => {
+            const req = indexedDB.open(this.DB, 1);
+            req.onupgradeneeded = () => req.result.createObjectStore(this.STORE);
+            req.onsuccess = () => { this._db = req.result; resolve(this._db); };
+            req.onerror = () => resolve(null);
+            req.onblocked = () => resolve(null);
+        });
+    },
+    _tx(mode, fn) {
+        return this.open().then((db) => {
+            if (!db) return null;
+            return new Promise((resolve) => {
+                const tx = db.transaction(this.STORE, mode);
+                const req = fn(tx.objectStore(this.STORE));
+                tx.oncomplete = () => resolve(req ? req.result : null);
+                tx.onerror = () => resolve(null);
+                tx.onabort = () => resolve(null);
+            });
+        }).catch(() => null);
+    },
+    get(convId) {
+        return this._tx('readonly', (s) => s.get(convId)).then(v => v || null);
+    },
+    set(convId, msgs) {
+        const trimmed = msgs.length > this.MAX_PER_CONV ? msgs.slice(-this.MAX_PER_CONV) : msgs;
+        return this._tx('readwrite', (s) => s.put(trimmed, convId));
+    },
+    clear() {
+        return this._tx('readwrite', (s) => s.clear());
+    },
+    // One-time cleanup of the old localStorage message cache so plaintext
+    // bodies don't linger there after the move to IndexedDB.
+    purgeLegacy() {
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith('gm_msgs_')) keys.push(k);
+            }
+            keys.forEach(k => localStorage.removeItem(k));
+        } catch (e) {}
+    },
+};
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 async function init() {
     listenForServiceWorkerMessages();
+    msgStore.purgeLegacy();
     try {
         const resp = await api('/api/auth/status');
         if (resp.loggedIn) {
@@ -418,9 +474,10 @@ async function addPasskey() {
     }
 }
 
-function doLogoutCleanup() {
+async function doLogoutCleanup() {
     if (state.eventSource) state.eventSource.close();
     cache.clear();
+    await msgStore.clear();
     state.loggedIn = false;
     state.phone = null;
     state.conversations = [];
@@ -432,7 +489,7 @@ function doLogoutCleanup() {
 async function logoutThis() {
     hideAccountMenu();
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
-    doLogoutCleanup();
+    await doLogoutCleanup();
 }
 
 async function logoutAll() {
@@ -452,7 +509,7 @@ async function logoutAll() {
             body: { clearPasskeys },
         });
     } catch (e) { /* ignore */ }
-    doLogoutCleanup();
+    await doLogoutCleanup();
 }
 
 // ─── Conversations ───────────────────────────────────────────────────────────
@@ -575,7 +632,8 @@ async function selectConversation(convId) {
     document.getElementById('sidebar').classList.remove('open');
 
     // Show cached messages immediately — no network wait.
-    const cachedMsgs = cache.get('msgs_' + convId);
+    const cachedMsgs = await msgStore.get(convId);
+    if (state.currentConversationId !== convId) return; // user moved on while IndexedDB opened
     const container = document.getElementById('messages');
     if (cachedMsgs) {
         state.messages = cachedMsgs;
@@ -595,7 +653,7 @@ async function selectConversation(convId) {
             state.messages = (resp.messages || []).sort(
                 (a, b) => new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0)
             );
-            cache.set('msgs_' + convId, state.messages);
+            msgStore.set(convId, state.messages);
             renderMessages();
             container.scrollTop = 0;
 
@@ -807,7 +865,7 @@ async function reloadCurrentConversation(delayMs) {
         if (oldKey === newKey) return;
 
         state.messages = newMessages;
-        cache.set('msgs_' + convId, serverMsgs);
+        msgStore.set(convId, serverMsgs);
         renderMessages();
         scrollToBottom();
     } catch (e) {
@@ -878,7 +936,7 @@ async function catchUpConversation(convId) {
             return new Date(a.sentAt || a.receivedAt || 0) - new Date(b.sentAt || b.receivedAt || 0);
         });
 
-        cache.set('msgs_' + convId, state.messages);
+        msgStore.set(convId, state.messages);
         if (added) scrollToBottom();
 
         // Mark last message as read
@@ -916,7 +974,7 @@ async function fetchMediaForMessage(convId, msgId) {
         delete existing._sendState;
         delete existing._errorMsg;
         delete existing._needsMedia;
-        cache.set('msgs_' + convId, state.messages);
+        msgStore.set(convId, state.messages);
         if (serverMsg.mediaId && !hadMedia) {
             rebuildMessageDOM(msgId);
         }
@@ -945,7 +1003,7 @@ async function loadOlderMessages() {
         const existing = new Set(state.messages.map(m => m.messageId));
         const newMsgs = older.filter(m => !existing.has(m.messageId));
         state.messages = [...newMsgs, ...state.messages];
-        cache.set('msgs_' + convId, state.messages);
+        msgStore.set(convId, state.messages);
         const scrollHeightBefore = container.scrollHeight;
         renderMessages();
         // column-reverse: new content at top increases scrollHeight,
@@ -1480,7 +1538,7 @@ function handleIncomingMessage(msg) {
             }
         } else {
             state.messages.push(msg);
-            cache.set('msgs_' + convId, state.messages);
+            msgStore.set(convId, state.messages);
 
             if (isReactionMessage(msg)) {
                 // Reaction messages aren't shown in timeline — update target's badges
