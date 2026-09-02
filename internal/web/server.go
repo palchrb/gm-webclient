@@ -126,13 +126,18 @@ func NewServer(logger *slog.Logger, dataDir string, vapidKeys *VAPIDKeys, opts .
 		opt(s)
 	}
 
-	// Restore encrypted sessions from disk if SESSION_KEY is configured
+	// Re-persist whenever Garmin rotates a token pair so a restart never
+	// restores stale credentials.
+	s.sessions.onCredentialsUpdated = s.PersistSessions
+
+	// Restore encrypted accounts/sessions from disk if persistence is enabled
 	if s.sessionStore != nil {
 		n := s.sessions.RestoreSessions(s.sessionStore, logger)
 		if n > 0 {
-			logger.Info("Restored encrypted sessions", "count", n)
+			logger.Info("Restored encrypted accounts", "count", n)
 			s.wireRestoredAccounts()
 		}
+		s.PersistSessions() // write back in current format, minus anything that failed validation
 	}
 
 	s.registerRoutes()

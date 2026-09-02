@@ -248,7 +248,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}
 			s.wirePushCallback(session.Account)
 
-			SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+			SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 			s.PersistSessions()
 
 			s.logger.Info("Passkey login successful", "phone", phone)
@@ -278,7 +278,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}
 			s.wirePushCallback(session.Account)
 
-			SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+			SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 			s.PersistSessions()
 
 			s.logger.Info("Passkey login successful (token refreshed)", "phone", phone)
@@ -312,7 +312,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 					session.Account.pushMu.Unlock()
 				}
 				s.wirePushCallback(session.Account)
-				SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+				SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 				s.PersistSessions()
 
 				s.logger.Info("Passkey login successful (late refresh)", "phone", phone)

@@ -20,7 +20,7 @@ func main() {
 	dataDir := flag.String("data-dir", "", "Directory for persistent data (FCM credentials, VAPID keys, push subscriptions, sessions)")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	phoneWhitelist := flag.String("phone-whitelist", "", "Comma-separated list of phone numbers allowed to log in (e.g. \"+4712345678,+4787654321\"). Empty allows all.")
-	sessionDays := flag.Int("session-days", 7, "Number of days a login session/cookie is valid")
+	sessionDays := flag.Int("session-days", 90, "Days of inactivity before a login session/cookie expires (renewed on use)")
 	origin := flag.String("origin", "", "Origin URL for passkey/WebAuthn support (e.g. \"https://garmin.tailnet.ts.net\")")
 	flag.Parse()
 

@@ -206,7 +206,7 @@ func (s *Server) handleConfirmOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.wirePushCallback(session.Account)
 
-	SetSessionCookie(w, session.ID, s.sessions.sessionDays)
+	SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 	s.PersistSessions()
 
 	userID := gm.PhoneToHermesUserID(req.Phone)
@@ -253,6 +253,8 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Touch()
+	// Renew the cookie on every page load so its lifetime slides with use.
+	SetSessionCookie(w, r, session.ID, s.sessions.sessionDays)
 	phone := session.Phone()
 	userID := gm.PhoneToHermesUserID(phone)
 	writeJSON(w, http.StatusOK, authStatusResponse{
@@ -268,7 +270,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessions.RemoveSession(session.ID)
 		s.PersistSessions()
 	}
-	ClearSessionCookie(w)
+	ClearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -297,7 +299,7 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.PersistSessions()
-	ClearSessionCookie(w)
+	ClearSessionCookie(w, r)
 	s.logger.Info("Full logout: all sessions + Garmin deregistered", "phone", phone, "passkeysCleared", req.ClearPasskeys)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }
