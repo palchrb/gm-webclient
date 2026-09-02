@@ -96,6 +96,12 @@ type HermesAuth struct {
 	ExpiresAt    float64 // Unix timestamp
 	pnsHandle    string
 
+	// OnCredentialsUpdated is invoked (on its own goroutine) whenever tokens
+	// change — after OTP confirmation and after every refresh. Callers that
+	// persist credentials elsewhere hook this so a refreshed token pair is
+	// never left stale on disk.
+	OnCredentialsUpdated func()
+
 	httpClient *http.Client
 	logger     *slog.Logger
 	mu         sync.Mutex
@@ -468,6 +474,10 @@ func (a *HermesAuth) storeCredentials(instanceID string, tokens *AccessAndRefres
 	a.RefreshToken = tokens.RefreshToken
 	a.InstanceID = instanceID
 	a.ExpiresAt = float64(time.Now().Unix()) + float64(tokens.ExpiresIn)
+
+	if cb := a.OnCredentialsUpdated; cb != nil {
+		go cb()
+	}
 
 	credsPath := a.credsPath()
 	if credsPath == "" {
