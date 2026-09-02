@@ -488,6 +488,17 @@ async function doLogoutCleanup() {
 
 async function logoutThis() {
     hideAccountMenu();
+    // Browser-only logout: drop *this* browser's Web Push subscription so it
+    // stops getting notifications, while the server account (and push to
+    // other browsers / ntfy) stays alive for an instant passkey re-login.
+    try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        const sub = await reg?.pushManager.getSubscription();
+        if (sub) {
+            await api('/api/push/subscribe', { method: 'DELETE', body: { endpoint: sub.endpoint } }).catch(() => {});
+            await sub.unsubscribe();
+        }
+    } catch (e) { /* ignore */ }
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
     await doLogoutCleanup();
 }
