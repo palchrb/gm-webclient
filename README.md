@@ -165,7 +165,7 @@ After logging in with OTP, you'll be prompted to register a passkey. On subseque
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.27.3+ or 1.26.10+ (older versions trust the compromised eMudhra CA keys; with an older Go installed, `go build` downloads the toolchain pinned in `go.mod`)
 
 ### Build
 
