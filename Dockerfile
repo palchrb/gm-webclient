@@ -14,7 +14,7 @@ COPY . .
 
 RUN go build -ldflags="-s -w" -o garmin-web ./cmd/garmin-web
 
-FROM alpine:3.23
+FROM alpine:3.24
 
 # apk upgrade pulls the newest ca-certificates (and other security fixes) even
 # when the alpine:3.23 base layer in the build cache is older.
