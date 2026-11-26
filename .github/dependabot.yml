@@ -1,0 +1,34 @@
+# Monthly dependency PRs (1st of each month), grouped so there are only a
+# few to review.
+# go-webauthn handles passkey login and has changed APIs between minor
+# versions, so it gets its own PR; test passkey login before merging.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      webauthn:
+        patterns: ["github.com/go-webauthn/*"]
+      go-deps:
+        patterns: ["*"]
+        exclude-patterns: ["github.com/go-webauthn/*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base images (golang:1.27-alpine3.23, alpine:3.23). Proposes the next Go
+  # major / Alpine release; patch releases are picked up by the weekly rebuild.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      docker:
+        patterns: ["*"]
